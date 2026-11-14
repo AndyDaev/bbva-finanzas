@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Finanzas BBVA</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Tu dinero, en claro</p>
+      <h1>Compras e ingresos</h1>
+    </div>
+    <div class="actions">
+      <span id="source-badge" class="badge" aria-live="polite">Cargando</span>
+      <button id="connect" class="primary" type="button">Conectar BBVA</button>
+      <label class="file">
+        Importar extracto
+        <input id="csv" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple />
+      </label>
+      <button id="demo" class="ghost" type="button">Ver ejemplo</button>
+    </div>
+  </header>
+
+  <section id="notice" class="notice hidden" role="alert" aria-live="assertive"></section>
+
+  <section class="filters">
+    <label>Desde <input id="from" type="date" autocomplete="off" /></label>
+    <label>Hasta <input id="to" type="date" autocomplete="off" /></label>
+    <label>Cuenta
+      <select id="account"><option value="">Todas</option></select>
+    </label>
+    <label class="grow">Buscar
+      <input id="query" type="search" placeholder="Mercadona, nómina, Bizum…" />
+    </label>
+  </section>
+
+  <section class="kpis" id="kpis"></section>
+
+  <div id="insights" class="insights"></div>
+
+  <section class="grid">
+    <article class="card chart-card">
+      <header>
+        <div>
+          <h2>Ingresos frente a gastos</h2>
+          <p>Mes a mes, sin contar traspasos internos</p>
+        </div>
+        <div class="legend">
+          <span><i class="swatch in"></i>Ingresos</span>
+          <span><i class="swatch out"></i>Gastos</span>
+          <span><i class="swatch save"></i>Ahorro</span>
+        </div>
+      </header>
+      <canvas id="months" width="720" height="280" role="img" aria-label="Comparativa mensual de ingresos y gastos"></canvas>
+    </article>
+    <article class="card">
+      <header>
+        <div>
+          <h2>Dónde se va el gasto</h2>
+          <p>Solo compras y cargos, no el ahorro</p>
+        </div>
+      </header>
+      <div class="split-chart">
+        <canvas id="donut" width="220" height="220" role="img" aria-label="Reparto del gasto por categoría"></canvas>
+        <div id="categories"></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="grid three">
+    <article class="card">
+      <header><h2>Dónde compras más</h2><p>Comercios agrupados</p></header>
+      <div id="merchants"></div>
+    </article>
+    <article class="card">
+      <header><h2>De dónde entra el dinero</h2><p>Origen de los ingresos</p></header>
+      <div id="incomes"></div>
+    </article>
+    <article class="card">
+      <header><h2>Compras más grandes</h2><p>Los cargos más altos</p></header>
+      <div id="biggest"></div>
+    </article>
+  </section>
+
+  <section class="card table-card">
+    <header>
+      <h2>Movimientos</h2>
+      <p id="tx-count"></p>
+    </header>
+    <div class="table-wrap">
+      <table>
+        <caption class="sr-only">Movimientos bancarios del periodo seleccionado</caption>
+        <thead>
+          <tr>
+            <th>Fecha</th>
+            <th>Concepto</th>
+            <th>Categoría</th>
+            <th>Cuenta</th>
+            <th class="num">Importe</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <dialog id="setup">
+    <form method="dialog">
+      <h2>Conectar la API de BBVA</h2>
+      <p>
+        Las cuentas, saldos y movimientos de BBVA se consultan por la API
+        <strong>Accounts PSD2</strong>, a través del HUB de Redsys. Hace falta
+        estar dado de alta como proveedor de información de cuentas (AISP) y
+        un certificado electrónico eIDAS. Con el usuario y la clave de la app
+        no se puede llamar a esa API.
+      </p>
+      <ol>
+        <li>Alta del TPP en el HUB PSD2 de Redsys y certificado QWAC.</li>
+        <li>Copia <code>.env.example</code> a <code>.env</code> en esta carpeta.</li>
+        <li>Rellena <code>BBVA_CLIENT_ID</code> (formato PSDES-BDE-…), <code>BBVA_CERT_PATH</code> y <code>BBVA_KEY_PATH</code>.</li>
+        <li>Reinicia el dashboard y pulsa Conectar. BBVA pedirá tu firma para un consentimiento de 90 días.</li>
+      </ol>
+      <p>
+        Para uso personal gratis: en bbva.es ve a Movimientos, descarga
+        Excel o CSV e impórtalo con <strong>Importar extracto</strong>.
+        Puedes subir varias cuentas; se fusionan. El ejemplo carga datos ficticios.
+      </p>
+      <div class="dialog-actions">
+        <button id="connect-anyway" class="primary" type="button" hidden>Continuar con BBVA</button>
+        <button value="cancel">Cerrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

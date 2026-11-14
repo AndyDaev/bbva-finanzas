@@ -1,0 +1,9 @@
+node_modules/
+web/web/dist/
+.env
+data/session.json
+data/import.json
+data/tickets.json
+*.pem
+*.key
+*.crt

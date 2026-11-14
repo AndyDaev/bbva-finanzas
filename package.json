@@ -1,0 +1,16 @@
+{
+  "name": "bbva-finanzas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dashboard local de análisis financiero con la API PSD2 de BBVA (Redsys) y modo de ejemplo.",
+  "scripts": {
+    "start": "node server.js",
+    "dev:web": "npm run dev --prefix web/web",
+    "build:web": "npm run build --prefix web/web",
+    "deploy:web": "npm run build --prefix web/web && npx wrangler pages deploy web/web/dist --project-name=bbva-finanzas",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  }
+}
