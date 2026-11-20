@@ -1,18 +1,13 @@
 import { json } from "../_lib/auth.js"
-import { ensureSchema, loadAll, setUpdatedAt } from "../_lib/db.js"
+import { ensureSchema, loadTickets, readJson, setUpdatedAt } from "../_lib/db.js"
 
 export async function onRequestPut(context) {
   const db = context.env.DB
   if (!db) return json({ error: "D1 no configurada" }, { status: 500 })
+  const body = await readJson(context.request)
+  if (!body) return json({ error: "JSON inválido" }, { status: 400 })
 
-  let body
-  try {
-    body = await context.request.json()
-  } catch {
-    return json({ error: "JSON inválido" }, { status: 400 })
-  }
-
-  const ticket = body?.ticket
+  const ticket = body.ticket
   if (!ticket?.id || !ticket.merchant) return json({ error: "Ticket incompleto" }, { status: 400 })
 
   await ensureSchema(db)
@@ -40,6 +35,6 @@ export async function onRequestPut(context) {
     )
     .run()
 
-  await setUpdatedAt(db)
-  return json(await loadAll(db))
+  const updatedAt = await setUpdatedAt(db)
+  return json({ tickets: await loadTickets(db), updatedAt })
 }

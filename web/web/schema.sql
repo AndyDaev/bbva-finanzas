@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions(account, date);
 
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY,
@@ -27,6 +28,17 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE TABLE IF NOT EXISTS budgets (
   category TEXT PRIMARY KEY,
   monthly_limit REAL NOT NULL
+);
+
+-- User categorization rules: applied before the built-in ones.
+CREATE TABLE IF NOT EXISTS rules (
+  id TEXT PRIMARY KEY,
+  pattern TEXT NOT NULL,
+  match_type TEXT NOT NULL DEFAULT 'contains',
+  category TEXT NOT NULL,
+  direction TEXT,
+  priority INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS meta (

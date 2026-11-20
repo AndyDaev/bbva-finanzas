@@ -31,6 +31,8 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/index.html',
+        // Unovis ships a map worker this app never uses: keep it out of the offline precache.
+        globIgnores: ['**/maplibre-gl-worker-*.js'],
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.pathname.startsWith('/api/'),

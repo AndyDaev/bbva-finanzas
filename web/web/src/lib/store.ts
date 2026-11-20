@@ -1,4 +1,5 @@
-import type { Budget, Transaction } from "./money"
+import type { UserRule } from "./categorize"
+import type { Budget, Transaction } from "./ids"
 import type { TicketDraft } from "./tickets"
 
 const KEY = "bbva-finanzas-v2"
@@ -15,95 +16,74 @@ export type StoreData = {
   transactions: Transaction[]
   tickets: StoredTicket[]
   budgets: Budget[]
+  rules: UserRule[]
   updatedAt: string | null
 }
 
-type ApiData = StoreData & {
-  importStats?: { inserted: number, updated: number, total: number }
-}
+export type ImportStats = { inserted: number, updated: number, total: number }
 
 function empty(): StoreData {
-  return { transactions: [], tickets: [], budgets: [], updatedAt: null }
+  return { transactions: [], tickets: [], budgets: [], rules: [], updatedAt: null }
+}
+
+const list = <T>(value: unknown) => (Array.isArray(value) ? (value as T[]) : [])
+
+function normalize(data: Partial<StoreData> | null | undefined): StoreData {
+  return {
+    transactions: list<Transaction>(data?.transactions),
+    tickets: list<StoredTicket>(data?.tickets),
+    budgets: list<Budget>(data?.budgets),
+    rules: list<UserRule>(data?.rules),
+    updatedAt: data?.updatedAt || null,
+  }
 }
 
 export function loadCache(): StoreData {
   try {
-    const raw = localStorage.getItem(KEY)
-    if (!raw) {
-      const legacy = localStorage.getItem(LEGACY_KEY)
-      if (!legacy) return empty()
-      const parsed = JSON.parse(legacy) as Partial<StoreData>
-      return {
-        transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
-        tickets: Array.isArray(parsed.tickets) ? parsed.tickets : [],
-        budgets: Array.isArray(parsed.budgets) ? parsed.budgets : [],
-        updatedAt: parsed.updatedAt || null,
-      }
-    }
-    const parsed = JSON.parse(raw) as StoreData
-    return {
-      transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
-      tickets: Array.isArray(parsed.tickets) ? parsed.tickets : [],
-      budgets: Array.isArray(parsed.budgets) ? parsed.budgets : [],
-      updatedAt: parsed.updatedAt || null,
-    }
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY)
+    return raw ? normalize(JSON.parse(raw)) : empty()
   } catch {
     return empty()
   }
 }
 
 export function saveCache(data: StoreData) {
-  localStorage.setItem(KEY, JSON.stringify({
-    ...data,
-    updatedAt: data.updatedAt || new Date().toISOString(),
-  }))
+  try {
+    localStorage.setItem(KEY, JSON.stringify({ ...data, updatedAt: data.updatedAt || new Date().toISOString() }))
+  } catch {
+    // Storage full or blocked: the cloud copy is still authoritative.
+  }
 }
 
 export function clearLocalData() {
-  localStorage.removeItem(KEY)
-  localStorage.removeItem(LEGACY_KEY)
+  try {
+    localStorage.removeItem(KEY)
+    localStorage.removeItem(LEGACY_KEY)
+  } catch {
+    // ignore
+  }
 }
 
 export async function clearApiCaches() {
   if (!("caches" in window)) return
   const keys = await caches.keys()
-  await Promise.all(
-    keys
-      .filter((key) => /api-cache|workbox|bbva/i.test(key))
-      .map((key) => caches.delete(key)),
-  )
-}
-
-function normalize(data: ApiData): StoreData {
-  return {
-    transactions: data.transactions || [],
-    tickets: data.tickets || [],
-    budgets: data.budgets || [],
-    updatedAt: data.updatedAt || null,
-  }
+  await Promise.all(keys.filter((key) => /api-cache|workbox|bbva/i.test(key)).map((key) => caches.delete(key)))
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
     ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   })
-  if (response.status === 401) {
-    throw new Error("UNAUTHORIZED")
-  }
-  if (response.status === 429) {
-    throw new Error("Demasiados intentos. Espera un minuto.")
-  }
+  if (response.status === 401) throw new Error("UNAUTHORIZED")
+  if (response.status === 429) throw new Error("Demasiados intentos. Espera un minuto.")
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    throw new Error((data as { error?: string }).error || `Error ${response.status}`)
-  }
+  if (!response.ok) throw new Error((data as { error?: string }).error || `Error ${response.status}`)
   return data as T
 }
+
+const send = (method: string, body?: unknown): RequestInit => ({ method, body: body === undefined ? undefined : JSON.stringify(body) })
 
 export async function checkSession() {
   try {
@@ -115,83 +95,58 @@ export async function checkSession() {
 }
 
 export async function login(password: string) {
-  await api<{ ok: boolean }>("/api/login", {
-    method: "POST",
-    body: JSON.stringify({ password }),
-  })
+  await api<{ ok: boolean }>("/api/login", send("POST", { password }))
 }
 
 export async function logout() {
-  await api<{ ok: boolean }>("/api/logout", { method: "POST" })
+  await api<{ ok: boolean }>("/api/logout", send("POST"))
 }
 
 export async function fetchData(): Promise<StoreData> {
-  const data = normalize(await api<ApiData>("/api/data"))
-  saveCache(data)
-  return data
+  return normalize(await api<Partial<StoreData>>("/api/data"))
 }
 
 export async function importTransactions(transactions: Transaction[]) {
-  const raw = await api<ApiData>("/api/import", {
-    method: "POST",
-    body: JSON.stringify({ transactions }),
-  })
-  const data = normalize(raw)
-  saveCache(data)
-  return Object.assign(data, { importStats: raw.importStats }) as StoreData & {
-    importStats?: { inserted: number, updated: number, total: number }
-  }
+  const raw = await api<Partial<StoreData> & { importStats?: ImportStats }>("/api/import", send("POST", { transactions }))
+  return { ...normalize(raw), importStats: raw.importStats }
 }
 
 export async function saveTicket(ticket: StoredTicket) {
-  const data = normalize(await api<ApiData>("/api/tickets", {
-    method: "PUT",
-    body: JSON.stringify({ ticket }),
-  }))
-  saveCache(data)
-  return data
+  return api<{ tickets: StoredTicket[], updatedAt: string }>("/api/tickets", send("PUT", { ticket }))
 }
 
 export async function deleteTicket(id: string) {
-  const data = normalize(await api<ApiData>(`/api/tickets/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  }))
-  saveCache(data)
-  return data
+  return api<{ tickets: StoredTicket[], updatedAt: string }>(`/api/tickets/${encodeURIComponent(id)}`, send("DELETE"))
 }
 
 export async function saveBudgets(budgets: Budget[]) {
-  const data = normalize(await api<ApiData>("/api/budgets", {
-    method: "PUT",
-    body: JSON.stringify({ budgets }),
-  }))
-  saveCache(data)
-  return data
+  return api<{ budgets: Budget[], updatedAt: string }>("/api/budgets", send("PUT", { budgets }))
 }
 
-export async function patchTransactionCategory(id: string, category: string) {
-  const data = normalize(await api<ApiData>(`/api/transactions/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ category }),
-  }))
-  saveCache(data)
-  return data
+export async function patchTransactionCategory(id: string, category: string, locked = true) {
+  return api<{ transaction: Transaction, updatedAt: string }>(
+    `/api/transactions/${encodeURIComponent(id)}`,
+    send("PATCH", { category, locked }),
+  )
 }
 
-/** Offline-friendly: seed server from local cache once if cloud is empty. */
-export async function migrateLocalIfNeeded(local: StoreData) {
-  if (!local.transactions.length && !local.tickets.length && !local.budgets.length) return null
+export async function saveRule(rule: UserRule) {
+  return api<{ rules: UserRule[], updatedAt: string }>("/api/rules", send("PUT", { rule }))
+}
+
+export async function deleteRule(id: string) {
+  return api<{ rules: UserRule[], updatedAt: string }>(`/api/rules/${encodeURIComponent(id)}`, send("DELETE"))
+}
+
+/** Offline-friendly: seed the server from the local cache once if the cloud is empty. */
+export async function migrateLocalIfNeeded(local: StoreData): Promise<StoreData | null> {
+  if (!local.transactions.length && !local.tickets.length && !local.budgets.length && !local.rules.length) return null
   const remote = await fetchData()
-  if (remote.transactions.length || remote.tickets.length || remote.budgets.length) return remote
+  if (remote.transactions.length || remote.tickets.length || remote.budgets.length || remote.rules.length) return remote
   let data = remote
-  if (local.transactions.length) {
-    data = await importTransactions(local.transactions)
-  }
-  for (const ticket of local.tickets) {
-    data = await saveTicket(ticket)
-  }
-  if (local.budgets.length) {
-    data = await saveBudgets(local.budgets)
-  }
+  if (local.transactions.length) data = await importTransactions(local.transactions)
+  for (const ticket of local.tickets) data = { ...data, ...(await saveTicket(ticket)) }
+  if (local.budgets.length) data = { ...data, ...(await saveBudgets(local.budgets)) }
+  for (const rule of local.rules) data = { ...data, ...(await saveRule(rule)) }
   return data
 }

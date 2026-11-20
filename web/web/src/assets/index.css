@@ -73,6 +73,17 @@
   --chart-3: oklch(0.65 0.015 95);
   --chart-4: oklch(0.75 0.01 95);
   --chart-5: oklch(0.82 0.008 95);
+  /* Categorical series (validated order: identity follows the category, never its rank). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-other: #8a8984;
+  --series-income: #1baf7a;
+  --series-expense: #eb6834;
+  --series-savings: #2a78d6;
   --radius: 0.75rem;
   --sidebar: oklch(0.98 0.004 95);
   --sidebar-foreground: oklch(0.18 0.01 95);
@@ -95,4 +106,35 @@
   h1, h2, h3 {
     letter-spacing: -0.03em;
   }
+}
+
+/* Chart tooltips (Unovis crosshair templates). Text uses text tokens; the swatch carries identity. */
+.viz-tip {
+  display: grid;
+  gap: 2px;
+  min-width: 160px;
+  font-size: 12px;
+  color: var(--foreground);
+}
+.viz-tip strong {
+  margin-bottom: 2px;
+}
+.viz-tip div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-foreground);
+}
+.viz-tip div b {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--foreground);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.viz-tip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }

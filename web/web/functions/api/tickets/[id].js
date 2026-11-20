@@ -1,5 +1,5 @@
 import { json } from "../../_lib/auth.js"
-import { ensureSchema, loadAll, setUpdatedAt } from "../../_lib/db.js"
+import { ensureSchema, loadTickets, setUpdatedAt } from "../../_lib/db.js"
 
 export async function onRequestDelete(context) {
   const db = context.env.DB
@@ -8,6 +8,6 @@ export async function onRequestDelete(context) {
   if (!id) return json({ error: "Falta id" }, { status: 400 })
   await ensureSchema(db)
   await db.prepare(`DELETE FROM tickets WHERE id = ?`).bind(id).run()
-  await setUpdatedAt(db)
-  return json(await loadAll(db))
+  const updatedAt = await setUpdatedAt(db)
+  return json({ tickets: await loadTickets(db), updatedAt })
 }

@@ -1,4 +1,17 @@
-export async function ensureSchema(db) {
+// Schema creation runs once per isolate instead of on every request.
+let schemaReady = null
+
+export function ensureSchema(db) {
+  if (!schemaReady) {
+    schemaReady = createSchema(db).catch((error) => {
+      schemaReady = null
+      throw error
+    })
+  }
+  return schemaReady
+}
+
+async function createSchema(db) {
   await db.batch([
     db.prepare(`
       CREATE TABLE IF NOT EXISTS transactions (
@@ -15,6 +28,7 @@ export async function ensureSchema(db) {
     `),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions(account, date)`),
     db.prepare(`
       CREATE TABLE IF NOT EXISTS tickets (
         id TEXT PRIMARY KEY,
@@ -31,6 +45,17 @@ export async function ensureSchema(db) {
       CREATE TABLE IF NOT EXISTS budgets (
         category TEXT PRIMARY KEY,
         monthly_limit REAL NOT NULL
+      )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS rules (
+        id TEXT PRIMARY KEY,
+        pattern TEXT NOT NULL,
+        match_type TEXT NOT NULL DEFAULT 'contains',
+        category TEXT NOT NULL,
+        direction TEXT,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
       )
     `),
     db.prepare(`
@@ -74,6 +99,17 @@ export function mapTicket(row) {
   }
 }
 
+export function mapRule(row) {
+  return {
+    id: row.id,
+    pattern: row.pattern,
+    matchType: row.match_type === "regex" ? "regex" : "contains",
+    category: row.category,
+    direction: row.direction === "in" || row.direction === "out" ? row.direction : null,
+    priority: Number(row.priority) || 0,
+  }
+}
+
 export async function setUpdatedAt(db, iso = new Date().toISOString()) {
   await db
     .prepare(`INSERT INTO meta (key, value) VALUES ('updated_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
@@ -87,21 +123,43 @@ export async function getUpdatedAt(db) {
   return row?.value || null
 }
 
+export async function loadTickets(db) {
+  const rows = await db.prepare(`SELECT * FROM tickets ORDER BY created_at DESC`).all()
+  return (rows.results || []).map(mapTicket)
+}
+
+export async function loadBudgets(db) {
+  const rows = await db.prepare(`SELECT * FROM budgets ORDER BY category`).all()
+  return (rows.results || []).map((row) => ({ category: row.category, monthlyLimit: row.monthly_limit }))
+}
+
+export async function loadRules(db) {
+  const rows = await db.prepare(`SELECT * FROM rules ORDER BY priority DESC, created_at`).all()
+  return (rows.results || []).map(mapRule)
+}
+
 export async function loadAll(db) {
   await ensureSchema(db)
-  const [txRows, ticketRows, budgetRows, updatedAt] = await Promise.all([
+  const [txRows, tickets, budgets, rules, updatedAt] = await Promise.all([
     db.prepare(`SELECT * FROM transactions ORDER BY date DESC, id DESC`).all(),
-    db.prepare(`SELECT * FROM tickets ORDER BY created_at DESC`).all(),
-    db.prepare(`SELECT * FROM budgets ORDER BY category`).all(),
+    loadTickets(db),
+    loadBudgets(db),
+    loadRules(db),
     getUpdatedAt(db),
   ])
   return {
     transactions: (txRows.results || []).map(mapTransaction),
-    tickets: (ticketRows.results || []).map(mapTicket),
-    budgets: (budgetRows.results || []).map((row) => ({
-      category: row.category,
-      monthlyLimit: row.monthly_limit,
-    })),
+    tickets,
+    budgets,
+    rules,
     updatedAt,
+  }
+}
+
+export async function readJson(request) {
+  try {
+    return await request.json()
+  } catch {
+    return undefined
   }
 }
