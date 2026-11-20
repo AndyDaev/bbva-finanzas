@@ -1,6 +1,17 @@
-import { createSessionCookie, json, passwordMatches } from "../_lib/auth.js"
+import { checkLoginRateLimit, createSessionCookie, json, passwordMatches } from "../_lib/auth.js"
 
 export async function onRequestPost(context) {
+  const limited = checkLoginRateLimit(context.request)
+  if (!limited.ok) {
+    return json(
+      { error: "Demasiados intentos. Espera un minuto." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(limited.retryAfter || 60) },
+      },
+    )
+  }
+
   let body
   try {
     body = await context.request.json()

@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx"
-import { categorize, type Transaction } from "./money"
+import { categorize, withStableIds, type Transaction } from "./money"
 
 export async function parseBankFile(file: File, account: string): Promise<Transaction[]> {
   const buffer = await file.arrayBuffer()
@@ -98,7 +98,6 @@ function rowsToTransactions(rows: Array<Array<string | number | Date>>, account:
         ? String(cells[accountIndex]).trim()
         : account
     const entry: Transaction = {
-      id: `import-${date}-${amount}-${index}`,
       date,
       amount,
       text,
@@ -112,7 +111,7 @@ function rowsToTransactions(rows: Array<Array<string | number | Date>>, account:
     transactions.push(entry)
   }
   if (!transactions.length) throw new Error("No encontré movimientos en ese archivo.")
-  return transactions
+  return withStableIds(transactions)
 }
 
 function parseDate(value: string | number | Date) {

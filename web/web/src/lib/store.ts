@@ -2,6 +2,7 @@ import type { Budget, Transaction } from "./money"
 import type { TicketDraft } from "./tickets"
 
 const KEY = "bbva-finanzas-v2"
+const LEGACY_KEY = "bbva-finanzas-v1"
 
 export type StoredTicket = TicketDraft & {
   id: string
@@ -17,7 +18,9 @@ export type StoreData = {
   updatedAt: string | null
 }
 
-type ApiData = StoreData
+type ApiData = StoreData & {
+  importStats?: { inserted: number, updated: number, total: number }
+}
 
 function empty(): StoreData {
   return { transactions: [], tickets: [], budgets: [], updatedAt: null }
@@ -27,8 +30,7 @@ export function loadCache(): StoreData {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) {
-      // one-shot migrate from v1 localStorage if present
-      const legacy = localStorage.getItem("bbva-finanzas-v1")
+      const legacy = localStorage.getItem(LEGACY_KEY)
       if (!legacy) return empty()
       const parsed = JSON.parse(legacy) as Partial<StoreData>
       return {
@@ -57,6 +59,30 @@ export function saveCache(data: StoreData) {
   }))
 }
 
+export function clearLocalData() {
+  localStorage.removeItem(KEY)
+  localStorage.removeItem(LEGACY_KEY)
+}
+
+export async function clearApiCaches() {
+  if (!("caches" in window)) return
+  const keys = await caches.keys()
+  await Promise.all(
+    keys
+      .filter((key) => /api-cache|workbox|bbva/i.test(key))
+      .map((key) => caches.delete(key)),
+  )
+}
+
+function normalize(data: ApiData): StoreData {
+  return {
+    transactions: data.transactions || [],
+    tickets: data.tickets || [],
+    budgets: data.budgets || [],
+    updatedAt: data.updatedAt || null,
+  }
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
@@ -67,8 +93,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   })
   if (response.status === 401) {
-    const error = new Error("UNAUTHORIZED")
-    throw error
+    throw new Error("UNAUTHORIZED")
+  }
+  if (response.status === 429) {
+    throw new Error("Demasiados intentos. Espera un minuto.")
   }
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
@@ -98,89 +126,56 @@ export async function logout() {
 }
 
 export async function fetchData(): Promise<StoreData> {
-  const data = await api<ApiData>("/api/data")
-  const normalized: StoreData = {
-    transactions: data.transactions || [],
-    tickets: data.tickets || [],
-    budgets: data.budgets || [],
-    updatedAt: data.updatedAt || null,
-  }
-  saveCache(normalized)
-  return normalized
+  const data = normalize(await api<ApiData>("/api/data"))
+  saveCache(data)
+  return data
 }
 
 export async function importTransactions(transactions: Transaction[]) {
-  const data = await api<ApiData>("/api/import", {
+  const raw = await api<ApiData>("/api/import", {
     method: "POST",
     body: JSON.stringify({ transactions }),
   })
-  const normalized: StoreData = {
-    transactions: data.transactions || [],
-    tickets: data.tickets || [],
-    budgets: data.budgets || [],
-    updatedAt: data.updatedAt || null,
+  const data = normalize(raw)
+  saveCache(data)
+  return Object.assign(data, { importStats: raw.importStats }) as StoreData & {
+    importStats?: { inserted: number, updated: number, total: number }
   }
-  saveCache(normalized)
-  return normalized
 }
 
 export async function saveTicket(ticket: StoredTicket) {
-  const data = await api<ApiData>("/api/tickets", {
+  const data = normalize(await api<ApiData>("/api/tickets", {
     method: "PUT",
     body: JSON.stringify({ ticket }),
-  })
-  const normalized: StoreData = {
-    transactions: data.transactions || [],
-    tickets: data.tickets || [],
-    budgets: data.budgets || [],
-    updatedAt: data.updatedAt || null,
-  }
-  saveCache(normalized)
-  return normalized
+  }))
+  saveCache(data)
+  return data
 }
 
 export async function deleteTicket(id: string) {
-  const data = await api<ApiData>(`/api/tickets/${encodeURIComponent(id)}`, {
+  const data = normalize(await api<ApiData>(`/api/tickets/${encodeURIComponent(id)}`, {
     method: "DELETE",
-  })
-  const normalized: StoreData = {
-    transactions: data.transactions || [],
-    tickets: data.tickets || [],
-    budgets: data.budgets || [],
-    updatedAt: data.updatedAt || null,
-  }
-  saveCache(normalized)
-  return normalized
+  }))
+  saveCache(data)
+  return data
 }
 
 export async function saveBudgets(budgets: Budget[]) {
-  const data = await api<ApiData>("/api/budgets", {
+  const data = normalize(await api<ApiData>("/api/budgets", {
     method: "PUT",
     body: JSON.stringify({ budgets }),
-  })
-  const normalized: StoreData = {
-    transactions: data.transactions || [],
-    tickets: data.tickets || [],
-    budgets: data.budgets || [],
-    updatedAt: data.updatedAt || null,
-  }
-  saveCache(normalized)
-  return normalized
+  }))
+  saveCache(data)
+  return data
 }
 
 export async function patchTransactionCategory(id: string, category: string) {
-  const data = await api<ApiData>(`/api/transactions/${encodeURIComponent(id)}`, {
+  const data = normalize(await api<ApiData>(`/api/transactions/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify({ category }),
-  })
-  const normalized: StoreData = {
-    transactions: data.transactions || [],
-    tickets: data.tickets || [],
-    budgets: data.budgets || [],
-    updatedAt: data.updatedAt || null,
-  }
-  saveCache(normalized)
-  return normalized
+  }))
+  saveCache(data)
+  return data
 }
 
 /** Offline-friendly: seed server from local cache once if cloud is empty. */

@@ -27,6 +27,7 @@ import {
   CATEGORY_OPTIONS,
   chatgptBrief,
   euro,
+  euroWhole,
   formatDay,
   guessAccountName,
   isoDate,
@@ -37,6 +38,8 @@ import {
 } from "@/lib/money"
 import {
   checkSession,
+  clearApiCaches,
+  clearLocalData,
   deleteTicket,
   fetchData,
   importTransactions,
@@ -46,6 +49,7 @@ import {
   migrateLocalIfNeeded,
   patchTransactionCategory,
   saveBudgets,
+  saveCache,
   saveTicket,
   type StoredTicket,
 } from "@/lib/store"
@@ -56,18 +60,23 @@ type Tab = "resumen" | "comercios" | "tickets" | "movimientos"
 const authed = ref(false)
 const authChecked = ref(false)
 const password = ref("")
+const showPassword = ref(false)
 const loginBusy = ref(false)
+const loginError = ref("")
 const tab = ref<Tab>("resumen")
 const transactions = ref<Transaction[]>([])
 const tickets = ref<StoredTicket[]>([])
 const budgets = ref<Budget[]>([])
 const budgetDraft = ref<Record<string, string>>({})
+const updatedAt = ref<string | null>(null)
 const notice = ref("")
+const menuOpen = ref(false)
 const busy = ref(false)
 const offline = ref(false)
 const account = ref("all")
 const category = ref("all")
 const query = ref("")
+const period = ref<"1m" | "3m" | "6m" | "1y" | "custom">("6m")
 const today = new Date()
 const from = ref(isoDate(new Date(today.getFullYear(), today.getMonth() - 5, 1)))
 const to = ref(isoDate(today))
@@ -77,6 +86,7 @@ const ticketInput = ref<HTMLInputElement | null>(null)
 const draft = ref<TicketDraft | null>(null)
 const selectedTxId = ref("none")
 const scanBusy = ref(false)
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
 
 const chartConfig = {
   income: { label: "Ingresos", color: "var(--chart-1)" },
@@ -98,26 +108,76 @@ const budgetCategories = [
 
 const accounts = computed(() => accountsFromTransactions(transactions.value))
 const categories = computed(() => [...new Set(transactions.value.map((tx) => tx.category))].sort())
+const hasData = computed(() => transactions.value.length > 0 || tickets.value.length > 0)
+
+/** KPIs/charts: date + account only (ignore category/search). */
+const analysisTx = computed(() =>
+  transactions.value.filter((tx) => {
+    if (tx.date < from.value || tx.date > to.value) return false
+    if (account.value !== "all" && tx.account !== account.value) return false
+    return true
+  }),
+)
 
 const filtered = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase("es")
-  return transactions.value.filter((tx) => {
-    if (tx.date < from.value || tx.date > to.value) return false
-    if (account.value !== "all" && tx.account !== account.value) return false
+  return analysisTx.value.filter((tx) => {
     if (category.value !== "all" && tx.category !== category.value) return false
     if (needle && !`${tx.text} ${tx.category}`.toLocaleLowerCase("es").includes(needle)) return false
     return true
   })
 })
 
-const view = computed(() => recompute(filtered.value, tickets.value, budgets.value))
+const view = computed(() => recompute(analysisTx.value, tickets.value, []))
+/** Budgets always from full unfiltered dataset (current month logic inside recompute). */
+const budgetStatuses = computed(() => recompute(transactions.value, tickets.value, budgets.value).budgets)
 const shown = computed(() => filtered.value.slice(0, 200))
 const matches = computed(() => (draft.value ? matchTransactions(draft.value, transactions.value) : []))
+const updatedLabel = computed(() => {
+  if (!updatedAt.value) return null
+  const date = new Date(updatedAt.value)
+  if (Number.isNaN(date.valueOf())) return null
+  const sameDay = isoDate(date) === isoDate(new Date())
+  const time = date.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })
+  return sameDay ? `Actualizado hoy ${time}` : `Actualizado ${formatDay(isoDate(date))} ${time}`
+})
 
-function applyData(data: { transactions: Transaction[], tickets: StoredTicket[], budgets: Budget[] }) {
+function applyPeriod(next: typeof period.value) {
+  period.value = next
+  if (next === "custom") return
+  const end = new Date()
+  const start = new Date()
+  if (next === "1m") start.setMonth(start.getMonth() - 1)
+  else if (next === "3m") start.setMonth(start.getMonth() - 3)
+  else if (next === "6m") start.setMonth(start.getMonth() - 6)
+  else start.setFullYear(start.getFullYear() - 1)
+  from.value = isoDate(new Date(start.getFullYear(), start.getMonth(), 1))
+  to.value = isoDate(end)
+}
+
+function flash(message: string) {
+  notice.value = message
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => {
+    notice.value = ""
+  }, 4200)
+}
+
+function persistLocal() {
+  saveCache({
+    transactions: transactions.value,
+    tickets: tickets.value,
+    budgets: budgets.value,
+    updatedAt: new Date().toISOString(),
+  })
+  updatedAt.value = new Date().toISOString()
+}
+
+function applyData(data: { transactions: Transaction[], tickets: StoredTicket[], budgets: Budget[], updatedAt?: string | null }) {
   transactions.value = data.transactions
   tickets.value = data.tickets
   budgets.value = data.budgets
+  updatedAt.value = data.updatedAt || null
   const draftMap: Record<string, string> = {}
   for (const name of budgetCategories) {
     const found = data.budgets.find((item) => item.category === name)
@@ -155,7 +215,7 @@ function sliceColor(_d: unknown, index: number) {
 
 function handleUnauthorized() {
   authed.value = false
-  notice.value = "Sesión caducada. Vuelve a entrar."
+  flash("Sesión caducada. Vuelve a entrar.")
 }
 
 onMounted(async () => {
@@ -173,21 +233,24 @@ onMounted(async () => {
     const migrated = await migrateLocalIfNeeded(cache)
     if (migrated) {
       applyData(migrated)
-      notice.value = "Datos sincronizados en la nube."
+      flash("Datos sincronizados en la nube.")
     } else {
       applyData(await fetchData())
     }
     offline.value = false
   } catch (error) {
     offline.value = true
-    notice.value = error instanceof Error && error.message === "UNAUTHORIZED"
-      ? "Sesión caducada. Vuelve a entrar."
-      : "Sin conexión: mostrando la última copia local."
+    flash(
+      error instanceof Error && error.message === "UNAUTHORIZED"
+        ? "Sesión caducada. Vuelve a entrar."
+        : "Sin conexión: mostrando la última copia local.",
+    )
   }
 })
 
 async function onLogin() {
   loginBusy.value = true
+  loginError.value = ""
   notice.value = ""
   try {
     await login(password.value)
@@ -196,9 +259,9 @@ async function onLogin() {
     const cache = loadCache()
     const migrated = await migrateLocalIfNeeded(cache)
     applyData(migrated || await fetchData())
-    notice.value = "Sesión iniciada."
+    flash("Sesión iniciada.")
   } catch (error) {
-    notice.value = error instanceof Error ? error.message : "No se pudo entrar."
+    loginError.value = error instanceof Error ? error.message : "No se pudo entrar."
   } finally {
     loginBusy.value = false
   }
@@ -210,8 +273,15 @@ async function onLogout() {
   } catch {
     // ignore
   }
+  clearLocalData()
+  await clearApiCaches()
+  transactions.value = []
+  tickets.value = []
+  budgets.value = []
+  updatedAt.value = null
   authed.value = false
-  notice.value = "Sesión cerrada."
+  menuOpen.value = false
+  flash("Sesión cerrada.")
 }
 
 async function importFiles(event: Event) {
@@ -234,21 +304,28 @@ async function importFiles(event: Event) {
     }
     if (!incomingAll.length) return
     try {
-      applyData(await importTransactions(incomingAll))
+      const result = await importTransactions(incomingAll)
+      applyData(result)
       offline.value = false
-      notice.value = `Extracto actualizado · ${transactions.value.length} movimientos en total.`
+      const stats = result.importStats
+      flash(
+        stats
+          ? `Importado: ${stats.inserted} nuevos, ${stats.updated} ya existentes · ${transactions.value.length} en total.`
+          : `Extracto actualizado · ${transactions.value.length} movimientos en total.`,
+      )
     } catch (error) {
       if (error instanceof Error && error.message === "UNAUTHORIZED") {
         handleUnauthorized()
         return
       }
       transactions.value = next
+      persistLocal()
       offline.value = true
-      notice.value = "Guardado en local (sin nube). Reintenta cuando haya conexión."
+      flash("Guardado en local (sin nube). Reintenta cuando haya conexión.")
     }
     updateAccount.value = ""
   } catch (error) {
-    notice.value = error instanceof Error ? error.message : "No se pudo importar."
+    flash(error instanceof Error ? error.message : "No se pudo importar.")
   } finally {
     busy.value = false
     input.value = ""
@@ -271,7 +348,7 @@ async function onTicketFile(event: Event) {
     selectedTxId.value = matchTransactions(draft.value, filtered.value)[0]?.id || "none"
     tab.value = "tickets"
   } catch (error) {
-    notice.value = error instanceof Error ? error.message : "No se pudo leer el ticket."
+    flash(error instanceof Error ? error.message : "No se pudo leer el ticket.")
     draft.value = parseTicketText("")
   } finally {
     scanBusy.value = false
@@ -297,13 +374,14 @@ async function saveTicketDraft() {
     applyData(await saveTicket(ticket))
     draft.value = null
     selectedTxId.value = "none"
-    notice.value = "Ticket guardado en la nube."
+    flash("Ticket guardado en la nube.")
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") return handleUnauthorized()
     tickets.value = [ticket, ...tickets.value]
+    persistLocal()
     offline.value = true
     draft.value = null
-    notice.value = "Ticket guardado en local (sin nube)."
+    flash("Ticket guardado en local (sin nube).")
   }
 }
 
@@ -313,6 +391,7 @@ async function removeTicket(id: string) {
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") return handleUnauthorized()
     tickets.value = tickets.value.filter((item) => item.id !== id)
+    persistLocal()
     offline.value = true
   }
 }
@@ -326,12 +405,13 @@ async function persistBudgets() {
     .filter((item) => item.monthlyLimit > 0)
   try {
     applyData(await saveBudgets(next))
-    notice.value = "Presupuestos guardados."
+    flash("Presupuestos guardados.")
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") return handleUnauthorized()
     budgets.value = next
+    persistLocal()
     offline.value = true
-    notice.value = "Presupuestos en local (sin nube)."
+    flash("Presupuestos en local (sin nube).")
   }
 }
 
@@ -343,29 +423,31 @@ async function setCategory(tx: Transaction, nextCategory: string) {
   tx.categoryLocked = true
   try {
     applyData(await patchTransactionCategory(tx.id, nextCategory))
-    notice.value = `Categoría fijada: ${nextCategory}`
+    flash(`Categoría fijada: ${nextCategory}`)
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       tx.category = previous
       tx.categoryLocked = locked
       return handleUnauthorized()
     }
+    persistLocal()
     offline.value = true
-    notice.value = "Categoría guardada en local (sin nube)."
+    flash("Categoría guardada en local (sin nube).")
   }
 }
 
 async function copyChatgpt() {
-  const text = chatgptBrief(view.value)
+  const brief = { ...view.value, budgets: budgetStatuses.value }
+  const text = chatgptBrief(brief)
   await navigator.clipboard.writeText(text)
-  notice.value = "Resumen copiado. Pégalo en ChatGPT."
+  menuOpen.value = false
+  flash("Resumen copiado. Pégalo en ChatGPT.")
 }
 
 function clearLocal() {
   if (!window.confirm("¿Borrar la copia local de este dispositivo? Los datos en la nube no se borran.")) return
-  localStorage.removeItem("bbva-finanzas-v1")
-  localStorage.removeItem("bbva-finanzas-v2")
-  notice.value = "Copia local borrada."
+  clearLocalData()
+  flash("Copia local borrada.")
 }
 </script>
 
@@ -383,13 +465,23 @@ function clearLocal() {
     <form class="grid gap-3" @submit.prevent="onLogin">
       <label class="grid gap-1 text-xs text-muted-foreground">
         Contraseña
-        <Input v-model="password" type="password" autocomplete="current-password" class="h-11 text-base" />
+        <div class="flex gap-2">
+          <Input
+            v-model="password"
+            :type="showPassword ? 'text' : 'password'"
+            autocomplete="current-password"
+            class="h-11 flex-1 text-base"
+          />
+          <Button type="button" variant="outline" class="h-11 shrink-0" @click="showPassword = !showPassword">
+            {{ showPassword ? "Ocultar" : "Ver" }}
+          </Button>
+        </div>
       </label>
+      <p v-if="loginError" class="text-sm text-destructive" role="alert">{{ loginError }}</p>
       <Button type="submit" class="h-11" :disabled="loginBusy || !password">
         {{ loginBusy ? "Entrando…" : "Entrar" }}
       </Button>
     </form>
-    <p v-if="notice" class="rounded-xl border bg-card px-3 py-2 text-sm">{{ notice }}</p>
   </main>
 
   <main v-else class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-6 pb-24 md:pb-16">
@@ -399,25 +491,42 @@ function clearLocal() {
           <p class="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">Finanzas personales</p>
           <h1 class="text-2xl font-semibold tracking-tight md:text-3xl">Compras e ingresos</h1>
           <p class="mt-1 text-sm text-muted-foreground">
-            {{ offline ? "Modo lectura local" : "Datos en la nube" }} · PWA
+            <span :class="offline ? 'text-amber-700' : ''">{{ offline ? "Sin conexión (copia local)" : "Datos en la nube" }}</span>
+            <span v-if="updatedLabel"> · {{ updatedLabel }}</span>
           </p>
         </div>
-        <div class="flex w-full flex-wrap gap-2 sm:w-auto">
+        <div class="relative flex w-full flex-wrap gap-2 sm:w-auto">
           <Button class="min-h-11 flex-1 sm:flex-none" :disabled="busy" @click="fileInput?.click()">Importar extracto</Button>
           <input ref="fileInput" class="hidden" type="file" accept=".csv,.xlsx,.xls" multiple @change="importFiles">
           <Button class="min-h-11 flex-1 sm:flex-none" variant="outline" :disabled="scanBusy" @click="ticketInput?.click()">
             {{ scanBusy ? "Leyendo…" : "Ticket / cámara" }}
           </Button>
           <input ref="ticketInput" class="hidden" type="file" accept="image/*" capture="environment" @change="onTicketFile">
-          <Button class="min-h-11" variant="ghost" @click="copyChatgpt">ChatGPT</Button>
-          <Button class="min-h-11" variant="ghost" @click="onLogout">Salir</Button>
+          <Button class="min-h-11" variant="ghost" @click="menuOpen = !menuOpen">Más</Button>
+          <div
+            v-if="menuOpen"
+            class="absolute right-0 top-full z-30 mt-1 min-w-[180px] rounded-xl border bg-card p-1 shadow-md"
+          >
+            <Button variant="ghost" class="w-full justify-start" @click="copyChatgpt">Copiar para ChatGPT</Button>
+            <Button variant="ghost" class="w-full justify-start" @click="onLogout">Salir</Button>
+          </div>
         </div>
       </div>
     </header>
 
-    <p v-if="notice" class="rounded-xl border bg-card px-3 py-2 text-sm">{{ notice }}</p>
+    <div
+      v-if="notice"
+      class="fixed bottom-20 left-1/2 z-40 w-[min(92vw,28rem)] -translate-x-1/2 rounded-xl border bg-card px-4 py-3 text-sm shadow-lg md:bottom-6"
+      role="status"
+    >
+      {{ notice }}
+    </div>
 
-    <nav class="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <nav
+      class="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      role="tablist"
+      aria-label="Secciones"
+    >
       <Button
         v-for="item in ([
           ['resumen', 'Resumen'],
@@ -428,6 +537,8 @@ function clearLocal() {
         :key="item[0]"
         size="sm"
         class="min-h-10 shrink-0"
+        role="tab"
+        :aria-selected="tab === item[0]"
         :variant="tab === item[0] ? 'default' : 'outline'"
         @click="tab = item[0]"
       >
@@ -435,74 +546,110 @@ function clearLocal() {
       </Button>
     </nav>
 
-    <section class="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
-      <label class="grid gap-1 text-xs text-muted-foreground">
-        Desde
-        <Input v-model="from" type="date" class="min-h-11" />
-      </label>
-      <label class="grid gap-1 text-xs text-muted-foreground">
-        Hasta
-        <Input v-model="to" type="date" class="min-h-11" />
-      </label>
-      <label class="grid gap-1 text-xs text-muted-foreground">
-        Cuenta
-        <Select v-model="account">
-          <SelectTrigger class="min-h-11 w-full"><SelectValue placeholder="Todas" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todas</SelectItem>
-            <SelectItem v-for="item in accounts" :key="item.name" :value="item.name">{{ item.name }}</SelectItem>
-          </SelectContent>
-        </Select>
-      </label>
-      <label class="grid gap-1 text-xs text-muted-foreground">
-        Categoría
-        <Select v-model="category">
-          <SelectTrigger class="min-h-11 w-full"><SelectValue placeholder="Todas" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todas</SelectItem>
-            <SelectItem v-for="name in categories" :key="name" :value="name">{{ name }}</SelectItem>
-          </SelectContent>
-        </Select>
-      </label>
-    </section>
+    <Card v-if="!hasData" class="border-dashed">
+      <CardHeader>
+        <CardTitle>Importa tu primer extracto</CardTitle>
+        <CardDescription>Tres pasos desde la app BBVA</CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3 text-sm">
+        <ol class="list-decimal space-y-2 pl-4 text-muted-foreground">
+          <li>Abre BBVA → tu cuenta → Movimientos.</li>
+          <li>Exporta a Excel o CSV (últimos meses).</li>
+          <li>Pulsa «Importar extracto» aquí arriba.</li>
+        </ol>
+        <Button class="min-h-11" :disabled="busy" @click="fileInput?.click()">Importar extracto</Button>
+      </CardContent>
+    </Card>
 
-    <label class="grid gap-1 text-xs text-muted-foreground">
-      Buscar
-      <Input v-model="query" type="search" class="min-h-11" placeholder="Hotel Santa Catalina, nómina, Fnac…" />
-    </label>
+    <template v-if="hasData">
+      <div class="flex flex-wrap gap-2">
+        <Button
+          v-for="item in ([
+            ['1m', 'Este mes'],
+            ['3m', '3 meses'],
+            ['6m', '6 meses'],
+            ['1y', 'Año'],
+            ['custom', 'Personalizado'],
+          ] as const)"
+          :key="item[0]"
+          size="sm"
+          class="min-h-10"
+          :variant="period === item[0] ? 'default' : 'outline'"
+          @click="applyPeriod(item[0])"
+        >
+          {{ item[1] }}
+        </Button>
+      </div>
 
-    <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <Card>
-        <CardHeader>
-          <CardDescription>Ingresos</CardDescription>
-          <CardTitle class="text-2xl">{{ euro.format(view.income) }}</CardTitle>
-        </CardHeader>
-        <CardContent class="text-xs text-muted-foreground">{{ view.incomeSources[0]?.name || "Sin ingresos" }}</CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardDescription>Gastos</CardDescription>
-          <CardTitle class="text-2xl">{{ euro.format(view.expense) }}</CardTitle>
-        </CardHeader>
-        <CardContent class="text-xs text-muted-foreground">{{ view.purchaseCount }} compras · ticket {{ euro.format(view.avgTicket) }}</CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardDescription>A ahorro</CardDescription>
-          <CardTitle class="text-2xl">{{ euro.format(view.toSavings) }}</CardTitle>
-        </CardHeader>
-        <CardContent class="text-xs text-muted-foreground">Traspasos a cuenta</CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardDescription>Te queda</CardDescription>
-          <CardTitle class="text-2xl">{{ euro.format(view.net) }}</CardTitle>
-        </CardHeader>
-        <CardContent class="text-xs text-muted-foreground">{{ Math.round(view.savingsRate * 100) }} % · fijo {{ euro.format(view.fixedSpend) }}</CardContent>
-      </Card>
-    </section>
+      <section v-if="period === 'custom' || tab !== 'tickets'" class="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+        <label class="grid gap-1 text-xs text-muted-foreground">
+          Desde
+          <Input v-model="from" type="date" class="min-h-11" @change="period = 'custom'" />
+        </label>
+        <label class="grid gap-1 text-xs text-muted-foreground">
+          Hasta
+          <Input v-model="to" type="date" class="min-h-11" @change="period = 'custom'" />
+        </label>
+        <label class="grid gap-1 text-xs text-muted-foreground">
+          Cuenta
+          <Select v-model="account">
+            <SelectTrigger class="min-h-11 w-full"><SelectValue placeholder="Todas" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas</SelectItem>
+              <SelectItem v-for="item in accounts" :key="item.name" :value="item.name">{{ item.name }}</SelectItem>
+            </SelectContent>
+          </Select>
+        </label>
+        <label v-if="tab !== 'tickets'" class="grid gap-1 text-xs text-muted-foreground">
+          Categoría
+          <Select v-model="category">
+            <SelectTrigger class="min-h-11 w-full"><SelectValue placeholder="Todas" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas</SelectItem>
+              <SelectItem v-for="name in categories" :key="name" :value="name">{{ name }}</SelectItem>
+            </SelectContent>
+          </Select>
+        </label>
+      </section>
 
-    <template v-if="tab === 'resumen'">
+      <label v-if="tab === 'movimientos' || tab === 'comercios'" class="grid gap-1 text-xs text-muted-foreground">
+        Buscar
+        <Input v-model="query" type="search" class="min-h-11" placeholder="Hotel Santa Catalina, nómina, Fnac…" />
+      </label>
+
+      <section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Card>
+          <CardHeader>
+            <CardDescription>Ingresos</CardDescription>
+            <CardTitle class="text-2xl text-emerald-700">{{ euroWhole.format(view.income) }}</CardTitle>
+          </CardHeader>
+          <CardContent class="text-xs text-muted-foreground">{{ view.incomeSources[0]?.name || "Sin ingresos" }}</CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardDescription>Gastos</CardDescription>
+            <CardTitle class="text-2xl text-rose-700">{{ euroWhole.format(view.expense) }}</CardTitle>
+          </CardHeader>
+          <CardContent class="text-xs text-muted-foreground">{{ view.purchaseCount }} compras · ticket {{ euro.format(view.avgTicket) }}</CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardDescription>A ahorro</CardDescription>
+            <CardTitle class="text-2xl">{{ euroWhole.format(view.toSavings) }}</CardTitle>
+          </CardHeader>
+          <CardContent class="text-xs text-muted-foreground">Traspasos a cuenta</CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardDescription>Sin asignar</CardDescription>
+            <CardTitle class="text-2xl">{{ euroWhole.format(view.unassigned) }}</CardTitle>
+          </CardHeader>
+          <CardContent class="text-xs text-muted-foreground">Neto − ahorro · {{ Math.round(view.savingsRate * 100) }} %</CardContent>
+        </Card>
+      </section>
+    </template>
+
+    <template v-if="hasData && tab === 'resumen'">
       <div class="flex flex-wrap gap-2">
         <Badge v-for="item in view.insights" :key="item" variant="secondary">{{ item }}</Badge>
       </div>
@@ -570,8 +717,8 @@ function clearLocal() {
               <Input v-model="budgetDraft[name]" type="number" min="0" step="10" class="min-h-11" placeholder="Sin tope" />
             </label>
           </div>
-          <div v-if="view.budgets.length" class="space-y-3">
-            <div v-for="item in view.budgets" :key="item.category" class="space-y-1.5 border-t pt-3 first:border-0 first:pt-0">
+          <div v-if="budgetStatuses.length" class="space-y-3">
+            <div v-for="item in budgetStatuses" :key="item.category" class="space-y-1.5 border-t pt-3 first:border-0 first:pt-0">
               <div class="flex items-center justify-between gap-2 text-sm">
                 <span class="font-medium">{{ item.category }}</span>
                 <span class="tabular-nums">{{ euro.format(item.spent) }} / {{ euro.format(item.limit) }}</span>
@@ -628,7 +775,9 @@ function clearLocal() {
               <div v-for="item in accounts" :key="item.name" class="flex items-center justify-between gap-3 py-2">
                 <div>
                   <p class="font-medium">{{ item.name }}</p>
-                  <p class="text-xs text-muted-foreground">Saldo estimado {{ euro.format(item.balance) }}</p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ item.balance == null ? "Sin saldo en extracto" : `Saldo ${euro.format(item.balance)}` }}
+                  </p>
                 </div>
                 <Button size="sm" class="min-h-10" variant="outline" @click="startUpdate(item.name)">Actualizar</Button>
               </div>
@@ -685,7 +834,7 @@ function clearLocal() {
       </section>
     </template>
 
-    <template v-else-if="tab === 'comercios'">
+    <template v-else-if="hasData && tab === 'comercios'">
       <div class="grid gap-3 md:grid-cols-2">
         <button
           v-for="item in view.merchants"
@@ -715,6 +864,7 @@ function clearLocal() {
     </template>
 
     <template v-else-if="tab === 'tickets'">
+      <!-- tickets usable even with only OCR drafts -->
       <Card v-if="draft">
         <CardHeader>
           <CardTitle>Revisar ticket</CardTitle>
@@ -779,7 +929,7 @@ function clearLocal() {
       <p v-if="!tickets.length && !draft" class="text-sm text-muted-foreground">Escanea un ticket con la cámara o sube una foto.</p>
     </template>
 
-    <template v-else>
+    <template v-else-if="hasData && tab === 'movimientos'">
       <Card>
         <CardHeader>
           <CardTitle>Movimientos</CardTitle>

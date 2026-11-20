@@ -15,7 +15,7 @@ export default defineConfig({
         name: 'Finanzas',
         short_name: 'Finanzas',
         description: 'Compras, ingresos, tickets y consejos locales',
-        theme_color: '#0a0a0a',
+        theme_color: '#f7f7f5',
         background_color: '#f7f7f5',
         display: 'standalone',
         start_url: '/',
@@ -51,7 +51,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:3780',
+      // Run `npm run dev:api` (wrangler pages dev) alongside Vite
+      '/api': 'http://127.0.0.1:8788',
     },
   },
 })

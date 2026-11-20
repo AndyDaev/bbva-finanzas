@@ -1,4 +1,9 @@
 export const euro = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" })
+export const euroWhole = new Intl.NumberFormat("es-ES", {
+  style: "currency",
+  currency: "EUR",
+  maximumFractionDigits: 0,
+})
 
 export type Transaction = {
   id?: string
@@ -92,6 +97,7 @@ export type View = {
   expense: number
   toSavings: number
   net: number
+  unassigned: number
   savingsRate: number
   avgExpense: number
   avgTicket: number
@@ -152,7 +158,8 @@ const RULES: Array<[RegExp, string, ("in" | "out")?]> = [
   [/\bbizum\b/i, "Bizum", "in"],
   [/\bbizum\b/i, "Bizum", "out"],
   [/\bn[oó]mina\b|\bsalario\b|\bhaberes\b|\bpayroll\b/i, "Nómina", "in"],
-  [/\bn[oó]mina inversa\b|\bdevoluci[oó]n\b|\breembolso\b|\babono\b/i, "Otros ingresos", "in"],
+  [/\bn[oó]mina inversa\b/i, "Otros ingresos", "in"],
+  [/\bdevoluci[oó]n\b|\breembolso\b/i, "Devolución", "in"],
   [/\balquiler\b|\brenta piso\b|\barrendamiento\b/i, "Vivienda", "out"],
   [/\bhipoteca\b|\bpr[eé]stamo vivienda\b/i, "Vivienda", "out"],
   [/\bluz\b|\belectric|\biberdrola\b|\bendesa\b|\bnaturgy\b|\bgas natural\b|\bagua\b|\bcanal isabel/i, "Suministros", "out"],
@@ -183,9 +190,36 @@ export function categorize(text: string, amount: number) {
     if (category === "Bizum") return amount >= 0 ? "Bizum recibido" : "Bizum enviado"
     return category
   }
-  if (amount > 0 && /pago con tarjeta|devoluci[oó]n|reembolso/i.test(source)) return "Devolución"
+  if (amount > 0 && /pago con tarjeta|abono/i.test(source)) return "Devolución"
   if (amount > 0) return "Otros ingresos"
   return "Otros gastos"
+}
+
+/** Stable fingerprint for matching the same bank row across imports. */
+export function transactionFingerprint(tx: { date: string, amount: number, text: string, account: string }) {
+  const amount = Number(tx.amount)
+  const normalizedAmount = Number.isFinite(amount) ? amount.toFixed(2) : "0.00"
+  return `${tx.date}|${normalizedAmount}|${String(tx.text || "").trim().toLocaleLowerCase("es")}|${String(tx.account || "").trim().toLocaleLowerCase("es")}`
+}
+
+function hash32(text: string) {
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+/** Assign deterministic IDs (occurrence-aware) so ticket links survive reimport. */
+export function withStableIds(rows: Transaction[]): Transaction[] {
+  const seen = new Map<string, number>()
+  return rows.map((tx) => {
+    const fp = transactionFingerprint(tx)
+    const n = seen.get(fp) || 0
+    seen.set(fp, n + 1)
+    return { ...tx, id: `tx_${hash32(`${fp}#${n}`)}` }
+  })
 }
 
 export function isFixedCategory(category: string) {
@@ -431,6 +465,7 @@ export function recompute(
   const budgetStatuses = buildBudgetStatuses(budgets, byMonthCategory, todayIso, months)
 
   const net = income - expense
+  const unassigned = net - toSavings
   const savingsRate = income > 0 ? net / income : 0
   const insights: string[] = []
   const trendBadges: string[] = []
@@ -457,6 +492,7 @@ export function recompute(
     expense,
     toSavings,
     net,
+    unassigned,
     savingsRate,
     avgExpense: expense / Math.max(months.length, 1),
     avgTicket: purchaseCount ? expense / purchaseCount : 0,
@@ -778,34 +814,65 @@ export function guessAccountName(filename: string, index = 0) {
   return index > 0 ? `BBVA cuenta ${index}` : "BBVA importado"
 }
 
+/**
+ * Non-destructive merge: keeps history not present in the new file,
+ * updates matched rows (preserving locked categories and existing ids).
+ */
 export function replaceAccountTransactions(existing: Transaction[], incoming: Transaction[]) {
-  const accounts = new Set(incoming.map((item) => item.account.toLowerCase()).filter(Boolean))
-  const locked = new Map<string, Transaction>()
+  const incomingStable = withStableIds(incoming)
+  const buckets = new Map<string, Transaction[]>()
   for (const item of existing) {
-    if (!accounts.has(item.account.toLowerCase())) continue
-    if (!item.categoryLocked) continue
-    const key = `${item.date}|${item.amount}|${item.text.toLowerCase()}|${item.account.toLowerCase()}`
-    locked.set(key, item)
+    const fp = transactionFingerprint(item)
+    const list = buckets.get(fp) || []
+    list.push(item)
+    buckets.set(fp, list)
   }
-  const kept = existing.filter((item) => !accounts.has(item.account.toLowerCase()))
+  for (const list of buckets.values()) {
+    list.sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")))
+  }
+
+  const matched = new Set<Transaction>()
+  const mergedIncoming: Transaction[] = []
+  for (const item of incomingStable) {
+    const bucket = buckets.get(transactionFingerprint(item)) || []
+    const match = bucket.find((row) => !matched.has(row))
+    if (match) {
+      matched.add(match)
+      mergedIncoming.push({
+        ...item,
+        id: match.id || item.id,
+        category: match.categoryLocked ? match.category : item.category,
+        categoryLocked: Boolean(match.categoryLocked),
+        balanceAfter: typeof item.balanceAfter === "number" ? item.balanceAfter : match.balanceAfter,
+      })
+    } else {
+      mergedIncoming.push(item)
+    }
+  }
+
+  const keptHistory = existing.filter((item) => !matched.has(item))
   const map = new Map<string, Transaction>()
-  for (const item of [...kept, ...incoming]) {
-    const key = `${item.date}|${item.amount}|${item.text.toLowerCase()}|${item.account.toLowerCase()}`
-    const override = locked.get(key)
-    map.set(key, override
-      ? { ...item, category: override.category, categoryLocked: true }
-      : item)
+  for (const item of [...keptHistory, ...mergedIncoming]) {
+    const key = item.id || `${transactionFingerprint(item)}|${map.size}`
+    map.set(key, item)
   }
   return [...map.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
 }
 
 export function accountsFromTransactions(transactions: Transaction[]) {
-  const map = new Map<string, { name: string, balance: number }>()
+  const map = new Map<string, { name: string, balance: number | null, balanceDate: string }>()
   for (const tx of transactions) {
-    const current = map.get(tx.account) || { name: tx.account, balance: 0 }
-    if (typeof tx.balanceAfter === "number") current.balance = tx.balanceAfter
-    else current.balance += tx.amount
+    const current = map.get(tx.account) || { name: tx.account, balance: null, balanceDate: "" }
+    if (typeof tx.balanceAfter === "number") {
+      if (!current.balanceDate || tx.date > current.balanceDate) {
+        current.balance = tx.balanceAfter
+        current.balanceDate = tx.date
+      }
+    }
     map.set(tx.account, current)
   }
-  return [...map.values()]
+  return [...map.values()].map((item) => ({
+    name: item.name,
+    balance: item.balance,
+  }))
 }

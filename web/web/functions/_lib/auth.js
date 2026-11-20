@@ -19,6 +19,13 @@ function base64UrlDecode(text) {
   return bytes
 }
 
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
 export async function sha256Hex(text) {
   const data = new TextEncoder().encode(text)
   const digest = await crypto.subtle.digest("SHA-256", data)
@@ -37,13 +44,18 @@ async function hmacSign(secret, payload) {
   return base64UrlEncode(new Uint8Array(signature))
 }
 
+function sessionVersion(env) {
+  return String(env.SESSION_VERSION || "1")
+}
+
 export async function createSessionCookie(env) {
   const exp = Math.floor(Date.now() / 1000) + MAX_AGE_SEC
-  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ exp })))
+  const payload = base64UrlEncode(
+    new TextEncoder().encode(JSON.stringify({ exp, v: sessionVersion(env) })),
+  )
   const signature = await hmacSign(env.SESSION_SECRET, payload)
   const value = `${payload}.${signature}`
-  const secure = "Secure; "
-  return `${COOKIE}=${value}; Path=/; HttpOnly; ${secure}SameSite=Lax; Max-Age=${MAX_AGE_SEC}`
+  return `${COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${MAX_AGE_SEC}`
 }
 
 export function clearSessionCookie() {
@@ -66,10 +78,11 @@ export async function isAuthenticated(request, env) {
   const [payload, signature] = raw.split(".")
   if (!payload || !signature) return false
   const expected = await hmacSign(env.SESSION_SECRET, payload)
-  if (expected !== signature) return false
+  if (!timingSafeEqual(expected, signature)) return false
   try {
-    const json = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)))
-    if (!json.exp || json.exp < Math.floor(Date.now() / 1000)) return false
+    const body = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)))
+    if (!body.exp || body.exp < Math.floor(Date.now() / 1000)) return false
+    if (String(body.v || "") !== sessionVersion(env)) return false
     return true
   } catch {
     return false
@@ -79,7 +92,7 @@ export async function isAuthenticated(request, env) {
 export async function passwordMatches(env, password) {
   if (!env.APP_PASSWORD_HASH) return false
   const hash = await sha256Hex(String(password || ""))
-  return hash === String(env.APP_PASSWORD_HASH).toLowerCase()
+  return timingSafeEqual(hash, String(env.APP_PASSWORD_HASH).toLowerCase())
 }
 
 export function json(data, init = {}) {
@@ -90,4 +103,22 @@ export function json(data, init = {}) {
 
 export function unauthorized() {
   return json({ error: "No autorizado" }, { status: 401 })
+}
+
+/** Best-effort per-isolate rate limit for login. */
+const loginAttempts = new Map()
+
+export function checkLoginRateLimit(request, limit = 8, windowMs = 60_000) {
+  const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "local"
+  const now = Date.now()
+  const current = loginAttempts.get(ip)
+  if (!current || current.reset < now) {
+    loginAttempts.set(ip, { count: 1, reset: now + windowMs })
+    return { ok: true }
+  }
+  current.count += 1
+  if (current.count > limit) {
+    return { ok: false, retryAfter: Math.ceil((current.reset - now) / 1000) }
+  }
+  return { ok: true }
 }
