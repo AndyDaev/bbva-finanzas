@@ -41,6 +41,15 @@ CREATE TABLE IF NOT EXISTS rules (
   created_at TEXT NOT NULL
 );
 
+-- Read-only bank consents (Enable Banking). Data stays when a consent is removed.
+CREATE TABLE IF NOT EXISTS bank_sessions (
+  id TEXT PRIMARY KEY,
+  valid_until TEXT NOT NULL,
+  accounts_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_sync_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

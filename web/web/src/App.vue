@@ -3,6 +3,7 @@ import { defineAsyncComponent, onMounted, ref } from "vue"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import AppHeader from "@/components/finance/AppHeader.vue"
+import BankCard from "@/components/finance/BankCard.vue"
 import FiltersBar from "@/components/finance/FiltersBar.vue"
 import KpiCards from "@/components/finance/KpiCards.vue"
 import LoginScreen from "@/components/finance/LoginScreen.vue"
@@ -63,7 +64,8 @@ onMounted(init)
       </Button>
     </nav>
 
-    <Card v-if="!hasData && tab !== 'tickets' && tab !== 'reglas'" class="border-dashed">
+    <template v-if="!hasData && tab !== 'tickets' && tab !== 'reglas'">
+    <Card class="border-dashed">
       <CardHeader>
         <CardTitle>Importa tu primer extracto</CardTitle>
         <CardDescription>Tres pasos desde la app BBVA</CardDescription>
@@ -77,6 +79,8 @@ onMounted(init)
         <Button class="min-h-11" :disabled="busy" @click="header?.openImport()">Importar extracto</Button>
       </CardContent>
     </Card>
+    <BankCard />
+    </template>
 
     <template v-else>
       <FiltersBar v-if="tab !== 'tickets' && tab !== 'reglas'" />

@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue"
 import { Button } from "@/components/ui/button"
 import { useFinance } from "@/lib/useFinance"
 
-const { busy, scanBusy, offline, updatedLabel, importFiles, scanTicket, copyChatgpt, doLogout } = useFinance()
+const { busy, scanBusy, offline, updatedLabel, importFiles, scanTicket, copyChatgpt, doLogout, activeBankSession, bankBusy, syncBank } = useFinance()
 const fileInput = ref<HTMLInputElement | null>(null)
 const ticketInput = ref<HTMLInputElement | null>(null)
 const menuOpen = ref(false)
@@ -60,6 +60,7 @@ onBeforeUnmount(() => document.removeEventListener("click", closeOnOutside))
         <input ref="ticketInput" class="hidden" type="file" accept="image/*" capture="environment" @change="onTicket">
         <Button class="min-h-11" variant="ghost" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">Más</Button>
         <div v-if="menuOpen" class="absolute right-0 top-full z-30 mt-1 min-w-[200px] rounded-xl border bg-card p-1 shadow-md">
+          <Button v-if="activeBankSession" variant="ghost" class="w-full justify-start" :disabled="bankBusy" @click="syncBank(); menuOpen = false">Sincronizar banco</Button>
           <Button variant="ghost" class="w-full justify-start" @click="copyChatgpt(); menuOpen = false">Copiar para ChatGPT</Button>
           <Button variant="ghost" class="w-full justify-start" @click="doLogout(); menuOpen = false">Salir</Button>
         </div>

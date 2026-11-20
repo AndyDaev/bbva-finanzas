@@ -59,6 +59,15 @@ async function createSchema(db) {
       )
     `),
     db.prepare(`
+      CREATE TABLE IF NOT EXISTS bank_sessions (
+        id TEXT PRIMARY KEY,
+        valid_until TEXT NOT NULL,
+        accounts_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_sync_at TEXT
+      )
+    `),
+    db.prepare(`
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -154,6 +163,39 @@ export async function loadAll(db) {
     rules,
     updatedAt,
   }
+}
+
+export function mapBankSession(row) {
+  let accounts = []
+  try {
+    accounts = JSON.parse(row.accounts_json || "[]")
+  } catch {
+    accounts = []
+  }
+  return {
+    id: row.id,
+    validUntil: row.valid_until,
+    accounts,
+    createdAt: row.created_at,
+    lastSyncAt: row.last_sync_at || null,
+  }
+}
+
+export async function loadBankSessions(db) {
+  const rows = await db.prepare(`SELECT * FROM bank_sessions ORDER BY created_at DESC`).all()
+  return (rows.results || []).map(mapBankSession)
+}
+
+export async function getMeta(db, key) {
+  const row = await db.prepare(`SELECT value FROM meta WHERE key = ?`).bind(key).first()
+  return row?.value ?? null
+}
+
+export async function setMeta(db, key, value) {
+  await db
+    .prepare(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    .bind(key, value)
+    .run()
 }
 
 export async function readJson(request) {

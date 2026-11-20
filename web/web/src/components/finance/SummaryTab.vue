@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { euro, euroWhole, formatDay, type MonthPoint, type NamedAmount } from "@/lib/money"
 import { BUDGET_CATEGORIES, useFinance } from "@/lib/useFinance"
+import BankCard from "./BankCard.vue"
 
 const emit = defineEmits<{ "import-account": [name: string] }>()
 const {
@@ -200,6 +201,8 @@ const forecastRatio = computed(() => {
       </CardContent>
     </Card>
   </section>
+
+  <BankCard />
 
   <section class="grid gap-3 lg:grid-cols-2">
     <Card>

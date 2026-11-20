@@ -18,6 +18,12 @@ import {
 } from "./money"
 import { parseBankFile } from "./importFile"
 import {
+  bankConnect,
+  bankDisconnect,
+  bankRenameAccount,
+  bankStatus,
+  bankSync,
+  type BankSession,
   checkSession,
   clearApiCaches,
   clearLocalData,
@@ -93,6 +99,8 @@ const draft = ref<TicketDraft | null>(null)
 const selectedTxId = ref("none")
 const scanBusy = ref(false)
 const suggestion = ref<RuleSuggestion | null>(null)
+const bank = ref<{ configured: boolean, sessions: BankSession[], loaded: boolean }>({ configured: false, sessions: [], loaded: false })
+const bankBusy = ref(false)
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
 
 // ───── Derived data ─────
@@ -249,9 +257,95 @@ async function init() {
   try {
     applyData((await migrateLocalIfNeeded(cache)) || (await fetchData()))
     offline.value = false
+    if (new URLSearchParams(window.location.search).has("bank")) await handleBankReturn()
+    else void loadBank()
   } catch (error) {
     offline.value = true
     flash(isUnauthorized(error) ? "Sesión caducada. Vuelve a entrar." : "Sin conexión: mostrando la última copia local.")
+  }
+}
+
+// ───── Bank connection ─────
+
+const activeBankSession = computed(() => bank.value.sessions.find((s) => !s.expired && s.validUntil > new Date().toISOString()) || null)
+
+async function loadBank() {
+  try {
+    const status = await bankStatus()
+    bank.value = { ...status, loaded: true }
+  } catch {
+    bank.value = { ...bank.value, loaded: true }
+  }
+}
+
+async function connectBank() {
+  bankBusy.value = true
+  try {
+    const { url } = await bankConnect()
+    window.location.assign(url)
+  } catch (error) {
+    if (isUnauthorized(error)) return handleUnauthorized()
+    flash(error instanceof Error ? error.message : "No se pudo iniciar la conexión con el banco.")
+    bankBusy.value = false
+  }
+}
+
+async function syncBank() {
+  bankBusy.value = true
+  try {
+    const result = await bankSync()
+    applyData(result.data)
+    bank.value = { ...bank.value, sessions: result.sessions }
+    offline.value = false
+    const { inserted, skipped } = result.stats
+    const parts = [`${inserted} movimientos nuevos`]
+    if (skipped) parts.push(`${skipped} ya estaban importados del Excel`)
+    flash(result.errors.length ? `${parts.join(" · ")}. Aviso: ${result.errors[0]!.message}` : `Banco sincronizado: ${parts.join(" · ")}.`)
+  } catch (error) {
+    if (isUnauthorized(error)) return handleUnauthorized()
+    flash(error instanceof Error ? error.message : "No se pudo sincronizar con el banco.")
+  } finally {
+    bankBusy.value = false
+  }
+}
+
+async function renameBankAccount(sessionId: string, uid: string, accountName: string) {
+  try {
+    const result = await bankRenameAccount(sessionId, uid, accountName)
+    bank.value = { ...bank.value, sessions: result.bankSessions }
+    applyData(await fetchData())
+    flash(`La cuenta del banco se guardará como «${accountName}».`)
+  } catch (error) {
+    if (isUnauthorized(error)) return handleUnauthorized()
+    flash(error instanceof Error ? error.message : "No se pudo renombrar.")
+  }
+}
+
+async function disconnectBank(id: string) {
+  if (!window.confirm("¿Desconectar BBVA? Se retira el permiso de lectura; tus movimientos ya guardados se quedan.")) return
+  try {
+    const result = await bankDisconnect(id)
+    bank.value = { ...bank.value, sessions: result.bankSessions }
+    flash("Banco desconectado.")
+  } catch (error) {
+    if (isUnauthorized(error)) return handleUnauthorized()
+    flash(error instanceof Error ? error.message : "No se pudo desconectar.")
+  }
+}
+
+/** Handles the ?bank=… flag the OAuth callback leaves on the URL. */
+async function handleBankReturn() {
+  const params = new URLSearchParams(window.location.search)
+  const status = params.get("bank")
+  if (!status) return
+  const reason = params.get("reason")
+  window.history.replaceState(null, "", window.location.pathname)
+  await loadBank()
+  if (status === "connected") {
+    flash("BBVA conectado. Sincronizando…")
+    await syncBank()
+  } else {
+    flash(`No se pudo conectar BBVA${reason ? `: ${reason}` : "."}`)
   }
 }
 
@@ -260,6 +354,7 @@ async function doLogin(password: string) {
   authed.value = true
   applyData((await migrateLocalIfNeeded(loadCache())) || (await fetchData()))
   flash("Sesión iniciada.")
+  void loadBank()
 }
 
 async function doLogout() {
@@ -525,5 +620,7 @@ export function useFinance() {
     flash, applyPeriod, init, doLogin, doLogout, importFiles, scanTicket, saveTicketDraft, removeTicket,
     persistBudgets, setCategory, unlockCategory, upsertRule, acceptSuggestion, removeRule, copyChatgpt,
     clearLocal, openMerchant, openCategory,
+    // bank
+    bank, bankBusy, activeBankSession, loadBank, connectBank, syncBank, renameBankAccount, disconnectBank,
   }
 }

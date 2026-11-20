@@ -138,6 +138,36 @@ export async function deleteRule(id: string) {
   return api<{ rules: UserRule[], updatedAt: string }>(`/api/rules/${encodeURIComponent(id)}`, send("DELETE"))
 }
 
+// ───── Bank connection (Enable Banking, read-only) ─────
+
+export type BankAccount = { uid: string, label: string, name: string, accountName: string }
+export type BankSession = { id: string, validUntil: string, accounts: BankAccount[], createdAt: string, lastSyncAt: string | null, expired?: boolean }
+export type SyncStats = { inserted: number, updated: number, skipped: number, accounts: number }
+
+export function bankStatus() {
+  return api<{ configured: boolean, sessions: BankSession[] }>("/api/bank/status")
+}
+
+export function bankConnect() {
+  return api<{ url: string }>("/api/bank/connect", send("POST"))
+}
+
+export async function bankSync() {
+  const raw = await api<Partial<StoreData> & { syncStats: SyncStats, syncErrors: Array<{ account: string, message: string }>, bankSessions: BankSession[] }>(
+    "/api/bank/sync",
+    send("POST"),
+  )
+  return { data: normalize(raw), stats: raw.syncStats, errors: raw.syncErrors || [], sessions: raw.bankSessions || [] }
+}
+
+export function bankRenameAccount(sessionId: string, uid: string, accountName: string) {
+  return api<{ bankSessions: BankSession[] }>("/api/bank/accounts", send("PATCH", { sessionId, uid, accountName }))
+}
+
+export function bankDisconnect(id: string) {
+  return api<{ bankSessions: BankSession[] }>(`/api/bank/sessions/${encodeURIComponent(id)}`, send("DELETE"))
+}
+
 /** Offline-friendly: seed the server from the local cache once if the cloud is empty. */
 export async function migrateLocalIfNeeded(local: StoreData): Promise<StoreData | null> {
   if (!local.transactions.length && !local.tickets.length && !local.budgets.length && !local.rules.length) return null
