@@ -91,8 +91,20 @@ export function psuHeaders(request) {
   return headers
 }
 
+// RSA signing is the most CPU-expensive step: reuse one token per isolate for ~50 minutes.
+let tokenCache = { key: "", token: "", expires: 0 }
+
+async function cachedJwt(env) {
+  const now = Math.floor(Date.now() / 1000)
+  const key = `${env.EB_APP_ID}|${String(env.EB_PRIVATE_KEY).length}`
+  if (tokenCache.key !== key || tokenCache.expires <= now) {
+    tokenCache = { key, token: await createJwt(env.EB_APP_ID, env.EB_PRIVATE_KEY, now), expires: now + 3000 }
+  }
+  return tokenCache.token
+}
+
 export async function ebFetch(env, path, { method = "GET", body, headers = {} } = {}) {
-  const jwt = await createJwt(env.EB_APP_ID, env.EB_PRIVATE_KEY)
+  const jwt = await cachedJwt(env)
   const response = await fetch(`${EB_API}${path}`, {
     method,
     headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json", ...headers },
@@ -135,6 +147,13 @@ export function createSession(env, code, request) {
 
 export function deleteSession(env, sessionId) {
   return ebFetch(env, `/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" })
+}
+
+/** One page of booked movements; `continuation_key` is null on the last page. */
+export function fetchTransactionsPage(env, accountUid, dateFrom, continuationKey, request) {
+  const params = new URLSearchParams({ date_from: dateFrom, transaction_status: "BOOK" })
+  if (continuationKey) params.set("continuation_key", continuationKey)
+  return ebFetch(env, `/accounts/${encodeURIComponent(accountUid)}/transactions?${params}`, { headers: psuHeaders(request) })
 }
 
 export async function fetchAllTransactions(env, accountUid, dateFrom, request, maxPages = 40) {

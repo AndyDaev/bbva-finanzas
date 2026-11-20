@@ -45,7 +45,7 @@ async function saveName() {
         </CardDescription>
       </div>
       <div v-if="bank.configured" class="flex flex-wrap gap-2">
-        <Button v-if="activeBankSession" class="min-h-10" :disabled="bankBusy" @click="syncBank">{{ bankBusy ? "Sincronizando…" : "Sincronizar" }}</Button>
+        <Button v-if="activeBankSession" class="min-h-10" :disabled="bankBusy" @click="syncBank()">{{ bankBusy ? "Sincronizando…" : "Sincronizar" }}</Button>
         <Button class="min-h-10" :variant="activeBankSession ? 'outline' : 'default'" :disabled="bankBusy" @click="connectBank">
           {{ activeBankSession ? "Renovar permiso" : "Conectar BBVA" }}
         </Button>

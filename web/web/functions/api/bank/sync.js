@@ -1,16 +1,18 @@
 import { json } from "../../_lib/auth.js"
-import { ensureSchema, loadAll, loadBankSessions, setUpdatedAt } from "../../_lib/db.js"
+import { ensureSchema, loadAll, loadBankSessions, readJson, setUpdatedAt } from "../../_lib/db.js"
 import {
   BankError,
-  backfillBalances,
-  fetchAllTransactions,
   fetchBookedBalance,
+  fetchTransactionsPage,
   isConfigured,
   mapBankTransaction,
   matchExistingAccount,
   planBankUpsert,
 } from "../../_lib/enablebanking.js"
 
+// Each request does a bounded amount of work (Workers CPU/subrequest limits); the client
+// calls again with the returned cursor until `done`.
+const PAGES_PER_STEP = 4
 const FIRST_SYNC_DAYS = 730
 const OVERLAP_DAYS = 10
 const FALLBACK_DAYS = 89
@@ -19,19 +21,107 @@ function daysAgo(days) {
   return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
 }
 
-async function fetchRows(env, account, dateFrom, request) {
-  try {
-    return await fetchAllTransactions(env, account.uid, dateFrom, request)
-  } catch (error) {
-    // Some banks only allow ~90 days of history: retry with a shorter window.
-    if (error instanceof BankError && /PERIOD|INTERVAL|DATE/i.test(String(error.code || error.message))) {
-      return fetchAllTransactions(env, account.uid, daysAgo(FALLBACK_DAYS), request)
-    }
-    throw error
+function startDate(session) {
+  return session.lastSyncAt
+    ? new Date(Date.parse(session.lastSyncAt) - OVERLAP_DAYS * 86400000).toISOString().slice(0, 10)
+    : daysAgo(FIRST_SYNC_DAYS)
+}
+
+/** Stable per bank account across consent renewals (the uid changes, the IBAN does not). */
+function accountKey(account) {
+  return account.label || account.uid
+}
+
+async function saveAccounts(db, session) {
+  await db.prepare(`UPDATE bank_sessions SET accounts_json = ? WHERE id = ?`).bind(JSON.stringify(session.accounts), session.id).run()
+}
+
+/** First sync only: adopt the name of the Excel-imported account this bank account matches. */
+async function autoMatchAccount(env, db, session, account, request) {
+  const range = await db
+    .prepare(`SELECT MIN(date) AS first FROM transactions WHERE id NOT LIKE 'eb\\_%' ESCAPE '\\'`)
+    .first()
+  if (!range?.first) return
+  const page = await fetchTransactionsPage(env, account.uid, range.first, null, request)
+  const sample = (page.transactions || []).map((raw) => mapBankTransaction(raw, account.accountName, accountKey(account))).filter(Boolean)
+  if (!sample.length) return
+  const candidates = await db
+    .prepare(`SELECT id, date, amount, account FROM transactions WHERE date >= ? AND id NOT LIKE 'eb\\_%' ESCAPE '\\'`)
+    .bind(range.first)
+    .all()
+  const claimed = new Set(session.accounts.filter((item) => item.uid !== account.uid).map((item) => item.accountName))
+  const match = matchExistingAccount((candidates.results || []).filter((row) => !claimed.has(row.account)), sample)
+  if (match && match !== account.accountName) {
+    account.accountName = match
+    await saveAccounts(db, session)
   }
 }
 
-/** Pulls booked movements from every valid bank session and upserts them. */
+/** Writes a batch with two statements (JSON-expanded), whatever its size. */
+async function writeRows(db, account, rows, now) {
+  if (!rows.length) return { inserted: 0, updated: 0, skipped: 0 }
+  const dates = rows.map((row) => row.date).sort()
+  const existing = await db
+    .prepare(`SELECT id, date, amount FROM transactions WHERE account = ? AND date BETWEEN ? AND ?`)
+    .bind(account.accountName, dates[0], dates[dates.length - 1])
+    .all()
+  const plan = planBankUpsert(existing.results || [], rows)
+  const statements = []
+  if (plan.inserts.length) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO transactions (id, date, amount, text, category, category_locked, account, balance_after, updated_at)
+           SELECT json_extract(value, '$.id'), json_extract(value, '$.date'), json_extract(value, '$.amount'),
+                  json_extract(value, '$.text'),
+                  CASE WHEN json_extract(value, '$.amount') < 0 THEN 'Otros gastos' ELSE 'Otros ingresos' END,
+                  0, ?, json_extract(value, '$.balanceAfter'), ?
+           FROM json_each(?) WHERE true
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .bind(account.accountName, now, JSON.stringify(plan.inserts)),
+    )
+  }
+  if (plan.updates.length) {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE transactions AS t
+           SET date = j.date, amount = j.amount, text = j.text,
+               balance_after = COALESCE(j.balance, t.balance_after), updated_at = ?
+           FROM (SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.date') AS date,
+                        json_extract(value, '$.amount') AS amount, json_extract(value, '$.text') AS text,
+                        json_extract(value, '$.balanceAfter') AS balance
+                 FROM json_each(?)) AS j
+           WHERE t.id = j.id`,
+        )
+        .bind(now, JSON.stringify(plan.updates)),
+    )
+  }
+  if (statements.length) await db.batch(statements)
+  return { inserted: plan.inserts.length, updated: plan.updates.length, skipped: plan.skipped }
+}
+
+/**
+ * Rebuilds missing balances backwards from the bank's booked balance in one statement:
+ * balance after a row = booked − sum of every later row. Rows with a balance are kept.
+ */
+async function backfillBalances(env, db, account, request) {
+  const booked = await fetchBookedBalance(env, account.uid, request).catch(() => null)
+  if (!booked) return
+  await db
+    .prepare(
+      `WITH calc AS (
+         SELECT id, ROUND(? - COALESCE(SUM(amount) OVER (ORDER BY date DESC, id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0), 2) AS balance
+         FROM transactions WHERE account = ?
+       )
+       UPDATE transactions SET balance_after = (SELECT balance FROM calc WHERE calc.id = transactions.id)
+       WHERE account = ? AND balance_after IS NULL`,
+    )
+    .bind(booked.amount, account.accountName, account.accountName)
+    .run()
+}
+
 export async function onRequestPost(context) {
   const { env, request } = context
   const db = env.DB
@@ -39,84 +129,79 @@ export async function onRequestPost(context) {
   if (!isConfigured(env)) return json({ error: "Falta configurar EB_APP_ID y EB_PRIVATE_KEY en Cloudflare." }, { status: 400 })
   await ensureSchema(db)
 
+  const body = (await readJson(request)) || {}
   const now = new Date().toISOString()
-  const sessions = (await loadBankSessions(db)).filter((session) => session.validUntil > now)
+  const sessions = (await loadBankSessions(db)).filter((session) => session.validUntil > now).reverse()
   if (!sessions.length) return json({ error: "No hay ninguna conexión con el banco vigente. Conecta BBVA de nuevo." }, { status: 409 })
 
-  const stats = { inserted: 0, updated: 0, skipped: 0, accounts: 0 }
-  const errors = []
+  let cursor = body.cursor && typeof body.cursor === "object" ? body.cursor : null
+  let sIndex = cursor ? sessions.findIndex((session) => session.id === cursor.sessionId) : 0
+  if (sIndex < 0) {
+    sIndex = 0
+    cursor = null
+  }
+  const stats = cursor?.stats || { inserted: 0, updated: 0, skipped: 0, accounts: 0 }
+  const errors = Array.isArray(cursor?.errors) ? cursor.errors : []
+  const session = sessions[sIndex]
+  const aIndex = Math.min(Number(cursor?.accountIndex) || 0, Math.max(session.accounts.length - 1, 0))
+  const account = session.accounts[aIndex]
+  let key = cursor?.key || null
+  let dateFrom = cursor?.dateFrom || startDate(session)
+  let accountDone = !account
 
-  for (const session of sessions) {
-    const dateFrom = session.lastSyncAt
-      ? new Date(Date.parse(session.lastSyncAt) - OVERLAP_DAYS * 86400000).toISOString().slice(0, 10)
-      : daysAgo(FIRST_SYNC_DAYS)
-    let sessionOk = true
-    for (const account of session.accounts) {
-      try {
-        const raw = await fetchRows(env, account, dateFrom, request)
-        let rows = raw.map((item) => mapBankTransaction(item, account.accountName, account.uid)).filter(Boolean)
-        // First sync: adopt the name of the Excel-imported account this bank account matches,
-        // so both sources merge instead of duplicating.
-        if (!session.lastSyncAt && rows.length) {
-          const candidates = await db
-            .prepare(`SELECT id, date, amount, account FROM transactions WHERE date >= ? AND id NOT LIKE 'eb\\_%' ESCAPE '\\'`)
-            .bind(dateFrom)
-            .all()
-          const claimed = new Set(session.accounts.filter((item) => item.uid !== account.uid).map((item) => item.accountName))
-          const match = matchExistingAccount((candidates.results || []).filter((row) => !claimed.has(row.account)), rows)
-          if (match && match !== account.accountName) {
-            account.accountName = match
-            rows = rows.map((row) => ({ ...row, account: match }))
-            await db.prepare(`UPDATE bank_sessions SET accounts_json = ? WHERE id = ?`).bind(JSON.stringify(session.accounts), session.id).run()
-          }
+  if (account) {
+    try {
+      if (!key && !session.lastSyncAt) await autoMatchAccount(env, db, session, account, request)
+      const rows = []
+      for (let page = 0; page < PAGES_PER_STEP; page += 1) {
+        let data
+        try {
+          data = await fetchTransactionsPage(env, account.uid, dateFrom, key, request)
+        } catch (error) {
+          // Some banks only allow ~90 days of history: restart this account with a shorter window.
+          if (!key && error instanceof BankError && /PERIOD|INTERVAL|DATE/i.test(String(error.code || error.message))) {
+            dateFrom = daysAgo(FALLBACK_DAYS)
+            data = await fetchTransactionsPage(env, account.uid, dateFrom, null, request)
+          } else throw error
         }
-        // Balances can only be rebuilt from a full history fetch, not an incremental window.
-        if (!session.lastSyncAt) {
-          const booked = await fetchBookedBalance(env, account.uid, request).catch(() => null)
-          rows = backfillBalances(rows, booked)
-        }
-        const existing = await db
-          .prepare(`SELECT id, date, amount FROM transactions WHERE account = ? AND date >= ?`)
-          .bind(account.accountName, dateFrom)
-          .all()
-        const plan = planBankUpsert(existing.results || [], rows)
-        const statements = [
-          ...plan.inserts.map((row) =>
-            db
-              .prepare(
-                `INSERT INTO transactions (id, date, amount, text, category, category_locked, account, balance_after, updated_at)
-                 VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
-              )
-              .bind(row.id, row.date, row.amount, row.text, row.amount < 0 ? "Otros gastos" : "Otros ingresos", row.account, row.balanceAfter ?? null, now),
-          ),
-          ...plan.updates.map((row) =>
-            db
-              .prepare(
-                `UPDATE transactions SET date = ?, amount = ?, text = ?, account = ?,
-                   balance_after = COALESCE(?, balance_after), updated_at = ? WHERE id = ?`,
-              )
-              .bind(row.date, row.amount, row.text, row.account, row.balanceAfter ?? null, now, row.id),
-          ),
-        ]
-        for (let i = 0; i < statements.length; i += 100) await db.batch(statements.slice(i, i + 100))
-        stats.inserted += plan.inserts.length
-        stats.updated += plan.updates.length
-        stats.skipped += plan.skipped
-        stats.accounts += 1
-      } catch (error) {
-        sessionOk = false
-        const expired = error instanceof BankError && /EXPIRED|REVOKED|SESSION/i.test(String(error.code))
-        errors.push({ account: account.accountName, message: expired ? "La autorización del banco ha caducado: vuelve a conectar." : error.message })
-        if (expired) {
-          await db.prepare(`UPDATE bank_sessions SET valid_until = ? WHERE id = ?`).bind(now, session.id).run()
-          break
-        }
+        rows.push(...(data.transactions || []).map((raw) => mapBankTransaction(raw, account.accountName, accountKey(account))).filter(Boolean))
+        key = data.continuation_key || null
+        if (!key) break
       }
+      const written = await writeRows(db, account, rows, now)
+      stats.inserted += written.inserted
+      stats.updated += written.updated
+      stats.skipped += written.skipped
+      if (!key) {
+        if (!session.lastSyncAt) await backfillBalances(env, db, account, request)
+        stats.accounts += 1
+        accountDone = true
+      }
+    } catch (error) {
+      const expired = error instanceof BankError && /EXPIRED|REVOKED|SESSION_DOES_NOT_EXIST/i.test(String(error.code))
+      errors.push({ account: account.accountName, message: expired ? "La autorización del banco ha caducado: vuelve a conectar." : error.message })
+      if (expired) await db.prepare(`UPDATE bank_sessions SET valid_until = ? WHERE id = ?`).bind(now, session.id).run()
+      accountDone = true
+      key = null
     }
-    if (sessionOk) await db.prepare(`UPDATE bank_sessions SET last_sync_at = ? WHERE id = ?`).bind(now, session.id).run()
+  }
+
+  if (!accountDone) {
+    return json({ done: false, cursor: { sessionId: session.id, accountIndex: aIndex, key, dateFrom, stats, errors }, stats })
+  }
+
+  // Move to the next account, or close this session and move to the next one.
+  if (aIndex + 1 < session.accounts.length) {
+    return json({ done: false, cursor: { sessionId: session.id, accountIndex: aIndex + 1, key: null, dateFrom: null, stats, errors }, stats })
+  }
+  if (!errors.some((item) => session.accounts.some((acc) => acc.accountName === item.account))) {
+    await db.prepare(`UPDATE bank_sessions SET last_sync_at = ? WHERE id = ?`).bind(now, session.id).run()
+  }
+  const next = sessions[sIndex + 1]
+  if (next) {
+    return json({ done: false, cursor: { sessionId: next.id, accountIndex: 0, key: null, dateFrom: null, stats, errors }, stats })
   }
 
   if (stats.inserted || stats.updated) await setUpdatedAt(db, now)
-  const data = await loadAll(db)
-  return json({ ...data, syncStats: stats, syncErrors: errors, bankSessions: await loadBankSessions(db) })
+  return json({ done: true, ...(await loadAll(db)), syncStats: stats, syncErrors: errors, bankSessions: await loadBankSessions(db) })
 }

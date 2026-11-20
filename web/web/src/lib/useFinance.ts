@@ -293,7 +293,9 @@ async function connectBank() {
 async function syncBank() {
   bankBusy.value = true
   try {
-    const result = await bankSync()
+    const result = await bankSync((stats) => {
+      notice.value = `Sincronizando con BBVA… ${stats.inserted + stats.updated + stats.skipped} movimientos leídos`
+    })
     applyData(result.data)
     bank.value = { ...bank.value, sessions: result.sessions }
     offline.value = false

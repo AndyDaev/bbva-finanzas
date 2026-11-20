@@ -152,12 +152,27 @@ export function bankConnect() {
   return api<{ url: string }>("/api/bank/connect", send("POST"))
 }
 
-export async function bankSync() {
-  const raw = await api<Partial<StoreData> & { syncStats: SyncStats, syncErrors: Array<{ account: string, message: string }>, bankSessions: BankSession[] }>(
-    "/api/bank/sync",
-    send("POST"),
-  )
-  return { data: normalize(raw), stats: raw.syncStats, errors: raw.syncErrors || [], sessions: raw.bankSessions || [] }
+type SyncStep = Partial<StoreData> & {
+  done: boolean
+  cursor?: unknown
+  stats?: SyncStats
+  syncStats?: SyncStats
+  syncErrors?: Array<{ account: string, message: string }>
+  bankSessions?: BankSession[]
+}
+
+/** The server syncs in bounded steps; keep calling with its cursor until it is done. */
+export async function bankSync(onProgress?: (stats: SyncStats) => void) {
+  let cursor: unknown = null
+  for (let step = 0; step < 400; step += 1) {
+    const raw: SyncStep = await api<SyncStep>("/api/bank/sync", send("POST", { cursor }))
+    if (raw.done) {
+      return { data: normalize(raw), stats: raw.syncStats!, errors: raw.syncErrors || [], sessions: raw.bankSessions || [] }
+    }
+    if (raw.stats) onProgress?.(raw.stats)
+    cursor = raw.cursor
+  }
+  throw new Error("La sincronización no terminó. Vuelve a pulsar «Sincronizar».")
 }
 
 export function bankRenameAccount(sessionId: string, uid: string, accountName: string) {
