@@ -31,6 +31,8 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/index.html',
+        // Never answer API navigations (e.g. the bank OAuth callback) with the app shell.
+        navigateFallbackDenylist: [/^\/api\//],
         // Unovis ships a map worker this app never uses: keep it out of the offline precache.
         globIgnores: ['**/maplibre-gl-worker-*.js'],
         runtimeCaching: [
