@@ -10,5 +10,7 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts", "functions/**/*.test.js"],
     environment: "node",
+    // The first render test compiles every SFC cold; give it room on slow machines.
+    testTimeout: 20_000,
   },
 })
