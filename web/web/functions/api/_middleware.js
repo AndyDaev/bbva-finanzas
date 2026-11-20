@@ -1,6 +1,9 @@
 import { isAuthenticated, unauthorized } from "../_lib/auth.js"
 
-const PUBLIC = new Set(["/api/login", "/api/me"])
+// The bank callback is reached from BBVA/Enable Banking, where the session cookie may not
+// travel (bank app, another browser, cross-site redirects). It is protected instead by the
+// single-use random `state` (30 min TTL) and only stores the consent; it returns no data.
+const PUBLIC = new Set(["/api/login", "/api/me", "/api/bank/callback"])
 
 export async function onRequest(context) {
   const url = new URL(context.request.url)
