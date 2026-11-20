@@ -7,3 +7,4 @@ data/tickets.json
 *.pem
 *.key
 *.crt
+data/
