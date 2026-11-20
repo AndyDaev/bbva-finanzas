@@ -1,16 +1,13 @@
 {
   "name": "bbva-finanzas",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Dashboard local de análisis financiero con la API PSD2 de BBVA (Redsys) y modo de ejemplo.",
+  "description": "Panel de finanzas personales (Vue + Cloudflare Pages + D1). La app vive en web/web.",
   "scripts": {
-    "start": "node server.js",
-    "dev:web": "npm run dev --prefix web/web",
-    "build:web": "npm run build --prefix web/web",
-    "deploy:web": "npm run build --prefix web/web && npx wrangler pages deploy web/web/dist --project-name=bbva-finanzas",
-    "test": "node --test"
-  },
-  "dependencies": {
-    "xlsx": "^0.18.5"
+    "dev": "npm run dev --prefix web/web",
+    "build": "npm run build --prefix web/web",
+    "test": "npm test --prefix web/web",
+    "typecheck": "npm run typecheck --prefix web/web",
+    "deploy": "npm run deploy --prefix web/web"
   }
 }
