@@ -1,5 +1,4 @@
-import Tesseract from "tesseract.js"
-import type { Transaction } from "./money"
+import type { Transaction } from "./ids"
 
 export type TicketItem = { name: string, amount: number }
 
@@ -12,6 +11,8 @@ export type TicketDraft = {
 }
 
 export async function scanTicketImage(file: File): Promise<TicketDraft> {
+  // OCR engine is heavy: only load it when a ticket is scanned.
+  const { default: Tesseract } = await import("tesseract.js")
   const result = await Tesseract.recognize(file, "spa+eng", {
     logger: () => undefined,
   })

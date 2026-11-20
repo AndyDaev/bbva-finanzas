@@ -1,10 +1,12 @@
-import * as XLSX from "xlsx"
-import { categorize, withStableIds, type Transaction } from "./money"
+import { categorize } from "./categorize"
+import { withStableIds, type Transaction } from "./ids"
+
+type Cell = string | number | Date
 
 export async function parseBankFile(file: File, account: string): Promise<Transaction[]> {
   const buffer = await file.arrayBuffer()
   const name = file.name.toLowerCase()
-  if (name.endsWith(".xlsx") || name.endsWith(".xls") || isZip(buffer)) {
+  if (name.endsWith(".xlsx") || name.endsWith(".xls") || isZip(buffer) || isOle(buffer)) {
     return parseWorkbook(buffer, account)
   }
   const text = new TextDecoder("utf-8").decode(buffer)
@@ -16,15 +18,23 @@ function isZip(buffer: ArrayBuffer) {
   return bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b
 }
 
-function parseWorkbook(buffer: ArrayBuffer, account: string) {
+/** Legacy .xls (OLE compound file) signature. */
+function isOle(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer)
+  return bytes.length >= 4 && bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0
+}
+
+/** SheetJS is large: load it only when a spreadsheet is actually imported. */
+async function parseWorkbook(buffer: ArrayBuffer, account: string) {
+  const XLSX = await import("xlsx")
   const workbook = XLSX.read(buffer, { type: "array", cellDates: true })
-  const sheet = workbook.Sheets[workbook.SheetNames[0]!]
-  const rows = XLSX.utils.sheet_to_json<(string | number | Date)[]>(sheet, { header: 1, defval: "", raw: true })
+  const sheet = workbook.Sheets[workbook.SheetNames[0]!]!
+  const rows = XLSX.utils.sheet_to_json<Cell[]>(sheet, { header: 1, defval: "", raw: true })
   return rowsToTransactions(rows, account)
 }
 
-function csvToRows(text: string) {
-  const cleaned = text.replace(/^\uFEFF/, "").trim()
+export function csvToRows(text: string) {
+  const cleaned = text.replace(/^﻿/, "").trim()
   if (!cleaned) return []
   const lines = cleaned.split(/\r?\n/).filter((line) => line.trim())
   const separator = (lines[0]!.match(/;/g) || []).length >= (lines[0]!.match(/,/g) || []).length ? ";" : ","
@@ -52,7 +62,7 @@ function splitRow(line: string, separator: string) {
 }
 
 function normalizeHeader(value: string) {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim()
+  return value.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim()
 }
 
 function findColumn(header: string[], names: string[]) {
@@ -60,7 +70,7 @@ function findColumn(header: string[], names: string[]) {
   return header.findIndex((column) => wanted.some((name) => column === name || column.includes(name)))
 }
 
-function rowsToTransactions(rows: Array<Array<string | number | Date>>, account: string) {
+export function rowsToTransactions(rows: Cell[][], account: string) {
   let headerIndex = -1
   for (let i = 0; i < Math.min(rows.length, 40); i += 1) {
     const header = (rows[i] || []).map((cell) => normalizeHeader(String(cell ?? "")))
@@ -114,16 +124,19 @@ function rowsToTransactions(rows: Array<Array<string | number | Date>>, account:
   return withStableIds(transactions)
 }
 
-function parseDate(value: string | number | Date) {
+/** Excel serial date (days since 1899-12-30) to ISO. */
+function excelSerialToIso(serial: number) {
+  if (serial < 1 || serial > 2958465) return null
+  return new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 86_400_000).toISOString().slice(0, 10)
+}
+
+export function parseDate(value: Cell) {
   if (value instanceof Date && !Number.isNaN(value.valueOf())) {
     const month = String(value.getMonth() + 1).padStart(2, "0")
     const day = String(value.getDate()).padStart(2, "0")
     return `${value.getFullYear()}-${month}-${day}`
   }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const parsed = XLSX.SSF.parse_date_code(value)
-    if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`
-  }
+  if (typeof value === "number" && Number.isFinite(value)) return excelSerialToIso(value)
   const text = String(value || "").trim()
   const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`
@@ -133,7 +146,7 @@ function parseDate(value: string | number | Date) {
   return `${year}-${local[2]!.padStart(2, "0")}-${local[1]!.padStart(2, "0")}`
 }
 
-function parseAmount(value: string | number | Date) {
+export function parseAmount(value: Cell) {
   if (typeof value === "number" && Number.isFinite(value)) return value
   let text = String(value || "").trim().replace(/\s/g, "").replace(/€/g, "")
   if (!text) return NaN
