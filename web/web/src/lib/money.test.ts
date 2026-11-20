@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest"
 import { csvToRows, parseAmount, parseDate, rowsToTransactions } from "./importFile"
 import {
   BIZUM_NET,
+  buildDailyPace,
+  cleanName,
+  detectSavingsAccounts,
   accountsFromTransactions,
   analyze,
   buildBalanceSeries,
@@ -26,7 +29,7 @@ describe("categorize", () => {
     expect(categorize("NÓMINA EMPRESA", 2500)).toBe("Nómina")
     expect(categorize("Abono de nómina · Energy plus", 1489)).toBe("Nómina")
     expect(categorize("Compra MERCADONA", -45)).toBe("Supermercado")
-    expect(categorize("TRASPASO A AHORRO", -300)).toBe("Ahorro")
+    expect(categorize("TRASPASO A AHORRO", -300)).toBe("Traspaso interno")
     expect(categorize("Traspaso desde cuenta · Ana", 50)).toBe("Traspaso interno")
     expect(categorize("UBER EATS PEDIDO", -22.5)).toBe("Comida a domicilio")
     expect(categorize("UBER TRIP", -8.4)).toBe("Transporte")
@@ -49,7 +52,7 @@ describe("categorize", () => {
     expect(categorize("Devolución MERCADONA", 30, rules)).toBe("Devolución")
     expect(categorize("PAGO MENSUAL GYM", -40, rules)).toBe("Salud")
     // Whole-word matching: "dia" must not match inside "media".
-    expect(categorize("MEDIAMARKT", -100, [{ id: "r3", pattern: "dia", matchType: "contains", category: "Supermercado" }])).toBe("Compras")
+    expect(categorize("MEDIAMARKT", -100, [{ id: "r3", pattern: "dia", matchType: "contains", category: "Supermercado" }])).toBe("Tecnología")
   })
 
   it("ignores invalid regex rules instead of throwing", () => {
@@ -97,7 +100,8 @@ describe("buildView", () => {
     expect(view.income).toBeCloseTo(1489.04)
     expect(view.incomeSources[0]!.name).toBe("Nómina")
     expect(view.expense).toBeCloseTo(9.85)
-    expect(view.toSavings).toBe(800)
+    // No savings account in view: everything moved to own accounts counts as set aside.
+    expect(view.toSavings).toBe(1100)
   })
 
   it("subtracts refunds from the month and category, not only the total", () => {
@@ -171,11 +175,11 @@ describe("previousRange", () => {
 describe("detectRecurring", () => {
   it("detects stable monthly charges", () => {
     const result = detectRecurring(
-      [tx("2026-01-03", -15.99, "NETFLIX 01/2026"), tx("2026-02-03", -15.99, "NETFLIX 02/2026"), tx("2026-03-03", -15.99, "NETFLIX 03/2026")],
-      "2026-03-20",
+      ["01", "02", "03", "04"].map((m) => tx(`2026-${m}-03`, -15.99, `NETFLIX ${m}/2026`)),
+      "2026-04-20",
     )
     expect(result).toHaveLength(1)
-    expect(result[0]).toMatchObject({ months: 3, amount: 15.99, status: "stable", nextDate: "2026-04-03", chargedThisMonth: true })
+    expect(result[0]).toMatchObject({ name: "Netflix", cadence: "monthly", months: 4, amount: 15.99, status: "stable", nextDate: "2026-05-03", chargedThisMonth: true })
     expect(result[0]!.annual).toBeCloseTo(191.88)
   })
 
@@ -205,14 +209,16 @@ describe("analyze", () => {
       tx("2026-10-01", 2000, "NÓMINA", { balanceAfter: 3000 }),
       tx("2026-10-10", -400, "MERCADONA", { balanceAfter: 2600 }),
       tx("2026-11-01", 2000, "NÓMINA", { balanceAfter: 4600 }),
-      tx("2026-11-10", -600, "MERCADONA", { balanceAfter: 4000 }),
+      ...[3, 6, 9, 12, 14].map((d) => tx(`2026-11-${String(d).padStart(2, "0")}`, -60, "MERCADONA")),
+      tx("2026-11-15", -300, "Recibo alquiler piso", { balanceAfter: 4000 }),
     ]
     const result = analyze({ transactions: data, from: "2026-11-01", to: "2026-11-30", today: "2026-11-15" })
     expect(result.compare?.expense.previous).toBeCloseTo(400)
     expect(result.compare?.expense.delta).toBeCloseTo(200)
     expect(result.compare?.expense.pct).toBeCloseTo(0.5)
     expect(result.forecast?.spent).toBeCloseTo(600)
-    expect(result.forecast?.projected).toBeCloseTo(1200)
+    // Rent (300) counts once; only the 300 of everyday spend is projected: 300 + 300 × 30/15.
+    expect(result.forecast?.projected).toBeCloseTo(900)
     expect(result.cushion?.months).toBeCloseTo(10)
   })
 })
@@ -280,5 +286,94 @@ describe("replaceAccountTransactions", () => {
     const fnac = merged.find((item) => item.text === "FNAC")!
     expect(fnac).toMatchObject({ id: "tx_old", category: "Ocio", categoryLocked: true })
     expect(merged.some((item) => item.id === "tx_hist")).toBe(true)
+  })
+})
+
+describe("BBVA API texts", () => {
+  const api = (category: string, kind: string, detail: string, counterparty = "") =>
+    `${category} // ${kind} // ${detail}${counterparty ? ` · ${counterparty}` : ""}`
+
+  it("extracts clean merchant names and groups brands", () => {
+    expect(cleanName(api("PAGO CON TARJETA EN SUPERMERCADOS", "PAGO CON TARJETA", "MERCADONA RONDA OUTEIRO A CORUÑA ES"))).toBe("Mercadona")
+    expect(cleanName(api("PAGO CON TARJETA EN RESTAURANTES Y CAFETERIAS", "PAGO CON TARJETA", "WOK TWO LA CORUNA ES"))).toBe("Wok Two")
+    expect(cleanName(api("PAGO CON TARJETA EN HOTELES Y ALOJAMIENTOS", "PAGO CON TARJETA", "HOTEL SANTA CATALINA A CORUNA ES", "HOTEL SANTA CATALINA"))).toBe("Hotel Santa Catalina")
+    expect(cleanName(api("PAGO CON TARJETA DE COMPRAS A DISTANCIA Y SUSCRIPCIONES", "PAGO CON TARJETA", "GOOGLE*GOOGLE PLAY APP", "GOOGLE*GOOGLE PLAY APP"))).toBe("Google Play")
+    expect(cleanName(api("PAGO CON TARJETA DE SERVICIOS VARIOS", "PAGO CON TARJETA", "SG CORUãA RIAZOR MALAGA ES", "SG CORUãA R"))).toBe("Sg Coruña R")
+    expect(cleanName(api("BIZUM", "OTROS", "RECIBIDO: wifi", "*****"))).toBe("Bizum: wifi")
+    expect(cleanName(api("TRASPASO", "TRASPASO A CUENTA", "ANDRES", "ANDRES"))).toBe("Traspaso entre cuentas")
+    expect(merchantKey(api("PAGO CON TARJETA EN SUPERMERCADOS", "PAGO CON TARJETA", "MERCADONA AV. PORTUGAL"))).toBe(
+      merchantKey(api("PAGO CON TARJETA EN SUPERMERCADOS", "PAGO CON TARJETA", "MERCADONA RONDA OUTEIRO")),
+    )
+  })
+
+  it("uses the merchant first and BBVA's category as fallback", () => {
+    expect(categorize(api("PAGO CON TARJETA EN RESTAURANTES Y CAFETERIAS", "PAGO CON TARJETA", "WWW.AMAZON* EM3SK82U5"), -10.99)).toBe("Compras")
+    expect(categorize(api("PAGO CON TARJETA EN MEDICINA,FARMACIA Y SANIDAD", "PAGO CON TARJETA", "JOSE MARIA OBESO"), -8)).toBe("Salud")
+    expect(categorize(api("COMPRA EN COMERCIO EXTRANJERO-COMISIÓN 3 % INCLUÍDA", "PAGO CON TARJETA", "PICTHING"), -5.61)).toBe("Compras")
+    expect(categorize(api("PAGO CON TARJETA DE COMPRAS A DISTANCIA Y SUSCRIPCIONES", "PAGO CON TARJETA", "OPENAI *CHATGPT SUBSCR"), -23)).toBe("Suscripciones")
+    expect(categorize(api("ADEUDO A SU CARGO", "PAGO DE ADEUDO DIRECTO SEPA", "N 2026302000627631 DIGI SPAIN TELECOM SA", "DIGI SPAIN"), -15)).toBe("Telecomunicaciones")
+    expect(categorize(api("INGRESO POR NÓMINA O PENSIÓN", "INGRESO POR NÓMINA O PENSIÓN", "EMPRESA SL"), 1500)).toBe("Nómina")
+    expect(categorize(api("TRASPASO PROGRAMA TU CUENTA", "TRASPASO A CUENTA", "TRP AHORRO NOMINA"), -36.65)).toBe("Traspaso interno")
+    expect(categorize(api("RET. EFECTIVO A DEBITO CON TARJ. EN CAJERO. AUT.", "OTROS", "CAJERO"), -50)).toBe("Efectivo")
+  })
+})
+
+describe("savings accounts", () => {
+  const main = (date: string, amount: number, text: string) => tx(date, amount, text, { account: "Principal" })
+  const pot = (date: string, amount: number) => tx(date, amount, amount > 0 ? "TRASPASO // TRASPASO DESDE CUENTA // YO" : "TRASPASO // TRASPASO A CUENTA // YO", { account: "Hucha" })
+
+  it("detects a pot and counts only the net that ends up in it", () => {
+    const data = [
+      main("2026-10-01", 2000, "NÓMINA"),
+      main("2026-10-02", -300, "TRASPASO // TRASPASO A CUENTA // YO"),
+      pot("2026-10-02", 300),
+      pot("2026-10-20", -50),
+      main("2026-10-20", 50, "TRASPASO // TRASPASO DESDE CUENTA // YO"),
+      ...[1, 2, 3].map((d) => pot(`2026-09-0${d}`, 10)),
+    ]
+    expect(detectSavingsAccounts(data)).toEqual(["Hucha"])
+    const both = buildView(data.filter((t) => t.date >= "2026-10-01"), [], { today: "2026-12-01", savingsAccounts: ["Hucha"] })
+    expect(both.toSavings).toBe(250)
+    expect(both.income).toBe(2000)
+    const onlyMain = buildView(data.filter((t) => t.account === "Principal"), [], { today: "2026-12-01", savingsAccounts: ["Hucha"] })
+    expect(onlyMain.toSavings).toBe(250)
+  })
+})
+
+describe("recurring by price point and cadence", () => {
+  it("separates two plans billed by the same merchant", () => {
+    const charges = ["06", "07", "08", "09", "10", "11"].flatMap((m) => [
+      tx(`2026-${m}-05`, -1.99, "PAGO CON TARJETA // PAGO CON TARJETA // GOOGLE*GOOGLE*ONE 14M"),
+      tx(`2026-${m}-16`, -2.99, "PAGO CON TARJETA // PAGO CON TARJETA // GOOGLE*GOOGLE*ONE 14M"),
+    ])
+    const result = detectRecurring(charges, "2026-11-20")
+    expect(result.map((r) => r.amount).sort()).toEqual([1.99, 2.99])
+  })
+
+  it("detects yearly charges and spreads them per month", () => {
+    const result = detectRecurring([tx("2024-03-10", -120, "SEGURO HOGAR ANUAL"), tx("2025-03-11", -120, "SEGURO HOGAR ANUAL")], "2025-11-01")
+    expect(result[0]).toMatchObject({ cadence: "yearly", amount: 120, nextDate: "2026-03-11" })
+    expect(result[0]!.monthly).toBeCloseTo(10)
+  })
+
+  it("ignores irregular shopping at the same merchant", () => {
+    const shop = ["2026-08-02", "2026-08-19", "2026-09-07", "2026-09-30", "2026-10-03", "2026-11-12"].map((d, i) => tx(d, -(5 + i * 7), "AMAZON MARKETPLACE"))
+    expect(detectRecurring(shop, "2026-11-20")).toHaveLength(0)
+  })
+})
+
+describe("daily pace", () => {
+  it("compares cumulative spend with the average of previous months", () => {
+    const data = [
+      tx("2026-08-05", -100, "MERCADONA"),
+      tx("2026-09-05", -200, "MERCADONA"),
+      tx("2026-10-05", -300, "MERCADONA"),
+      tx("2026-11-03", -50, "MERCADONA"),
+      tx("2026-11-04", 20, "BIZUM DE LUIS"),
+    ]
+    const pace = buildDailyPace(data, "2026-11-10")!
+    expect(pace.today).toBe(10)
+    expect(pace.points[9]).toEqual({ day: 10, current: 30, average: 200 })
+    expect(pace.points[10]!.current).toBeNull()
   })
 })

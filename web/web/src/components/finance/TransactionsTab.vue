@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { CATEGORY_OPTIONS, euro, formatDay } from "@/lib/money"
+import { CATEGORY_OPTIONS, cleanName, euro, formatDay, parseBankText } from "@/lib/money"
 import { useFinance } from "@/lib/useFinance"
 
 const PAGE = 100
@@ -27,6 +27,13 @@ const patternDraft = ref("")
 watch(suggestion, (value) => {
   patternDraft.value = value?.pattern || ""
 })
+
+/** Clean merchant name plus BBVA's own description (category or movement type). */
+function describe(text: string) {
+  const parts = parseBankText(text)
+  const detail = parts.bankCategory || parts.kind
+  return { name: cleanName(text), detail: detail ? detail.charAt(0) + detail.slice(1).toLocaleLowerCase("es") : "" }
+}
 
 function onCategory(tx: (typeof filtered.value)[number], event: Event) {
   setCategory(tx, (event.target as HTMLSelectElement).value)
@@ -74,13 +81,16 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
           <tbody>
             <tr v-for="tx in shown" :key="tx.id || `${tx.date}-${tx.text}-${tx.amount}-${tx.account}`" class="border-b last:border-0">
               <td class="whitespace-nowrap py-1.5 pr-3 tabular-nums">{{ formatDay(tx.date) }}</td>
-              <td class="max-w-[320px] truncate py-1.5 pr-3" :title="tx.text">{{ tx.text }}</td>
+              <td class="max-w-[320px] py-1.5 pr-3" :title="tx.text">
+                <span class="block truncate">{{ describe(tx.text).name }}</span>
+                <span v-if="describe(tx.text).detail" class="block truncate text-xs text-muted-foreground">{{ describe(tx.text).detail }}</span>
+              </td>
               <td class="py-1.5 pr-3">
                 <div class="flex items-center gap-1">
                   <select
                     class="h-9 w-[180px] rounded-md border bg-background px-2 text-sm"
                     :value="tx.category"
-                    :aria-label="`Categoría de ${tx.text}`"
+                    :aria-label="`Categoría de ${describe(tx.text).name}`"
                     @change="onCategory(tx, $event)"
                   >
                     <option v-for="name in CATEGORY_OPTIONS" :key="name" :value="name">{{ name }}</option>
@@ -108,13 +118,14 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
         <div v-for="tx in shown" :key="tx.id || `${tx.date}-${tx.text}-${tx.amount}-${tx.account}`" class="space-y-2 border-t pt-3 first:border-0 first:pt-0">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
-              <p class="truncate font-medium">{{ tx.text }}</p>
+              <p class="truncate font-medium" :title="tx.text">{{ describe(tx.text).name }}</p>
+              <p v-if="describe(tx.text).detail" class="truncate text-xs text-muted-foreground">{{ describe(tx.text).detail }}</p>
               <p class="text-xs text-muted-foreground">{{ formatDay(tx.date) }} · {{ tx.account }}</p>
             </div>
             <strong class="shrink-0 tabular-nums" :class="tx.amount > 0 ? 'text-emerald-700' : ''">{{ euro.format(tx.amount) }}</strong>
           </div>
           <div class="flex items-center gap-2">
-            <select class="h-11 flex-1 rounded-md border bg-background px-2 text-sm" :value="tx.category" :aria-label="`Categoría de ${tx.text}`" @change="onCategory(tx, $event)">
+            <select class="h-11 flex-1 rounded-md border bg-background px-2 text-sm" :value="tx.category" :aria-label="`Categoría de ${describe(tx.text).name}`" @change="onCategory(tx, $event)">
               <option v-for="name in CATEGORY_OPTIONS" :key="name" :value="name">{{ name }}</option>
               <option v-if="!CATEGORY_OPTIONS.includes(tx.category)" :value="tx.category">{{ tx.category }}</option>
             </select>

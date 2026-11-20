@@ -1,6 +1,7 @@
 import { computed, ref } from "vue"
 import {
   accountsFromTransactions,
+  detectSavingsAccounts,
   analyze,
   chatgptBrief,
   cleanName,
@@ -53,10 +54,10 @@ export const BUDGET_CATEGORIES = [
   "Restauración",
   "Comida a domicilio",
   "Compras",
+  "Ropa",
+  "Tecnología",
   "Ocio",
-  "Viajes",
   "Transporte",
-  "Salud",
   "Suscripciones",
 ]
 
@@ -110,12 +111,15 @@ const normalized = computed(() => normalizeTransactions(transactions.value, rule
 const accountTx = computed(() =>
   account.value === "all" ? normalized.value : normalized.value.filter((tx) => tx.account === account.value),
 )
+/** Savings pots are detected over every account, so an account filter never changes them. */
+const savingsAccounts = computed(() => detectSavingsAccounts(normalized.value))
 const analysis = computed(() =>
   analyze({
     transactions: accountTx.value,
     tickets: tickets.value,
     budgets: budgets.value,
     rules: rules.value,
+    savingsAccounts: savingsAccounts.value,
     from: from.value,
     to: to.value,
   }),
@@ -617,7 +621,7 @@ export function useFinance() {
     offline, account, category, query, period, from, to, draft, selectedTxId, scanBusy, suggestion,
     // derived
     sortedRules, normalized, analysis, view, periodTx, filtered, accounts, categories, hasData, ticketMatches,
-    ruleCounts, updatedLabel, categoryColors,
+    ruleCounts, updatedLabel, categoryColors, savingsAccounts,
     // actions
     flash, applyPeriod, init, doLogin, doLogout, importFiles, scanTicket, saveTicketDraft, removeTicket,
     persistBudgets, setCategory, unlockCategory, upsertRule, acceptSuggestion, removeRule, copyChatgpt,

@@ -1,119 +1,165 @@
 <script setup lang="ts">
-import { computed } from "vue"
-import { VisAxis, VisCrosshair, VisDonut, VisGroupedBar, VisSingleContainer, VisTooltip, VisXYContainer } from "@unovis/vue"
+import { computed, ref } from "vue"
+import { VisAxis, VisCrosshair, VisLine, VisTooltip, VisXYContainer } from "@unovis/vue"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { euro, euroWhole, formatDay, type MonthPoint, type NamedAmount } from "@/lib/money"
+import { euro, euroWhole, formatDay, type DailyPace } from "@/lib/money"
 import { BUDGET_CATEGORIES, useFinance } from "@/lib/useFinance"
 import BankCard from "./BankCard.vue"
+import DeltaNote from "./DeltaNote.vue"
 
 const emit = defineEmits<{ "import-account": [name: string] }>()
 const {
-  analysis, view, accounts, budgetDraft, categoryColors,
+  analysis, view, accounts, budgetDraft, categoryColors, savingsAccounts,
   persistBudgets, copyChatgpt, clearLocal, openMerchant, openCategory,
 } = useFinance()
 
-const flowSeries = [
-  { key: "income", label: "Ingresos", color: "var(--series-income)" },
-  { key: "expense", label: "Gastos", color: "var(--series-expense)" },
-  { key: "savings", label: "A ahorro", color: "var(--series-savings)" },
-] as const
+const editingBudgets = ref(false)
 
-const x = (d: MonthPoint) => d.index
-const flowY = flowSeries.map((s) => (d: MonthPoint) => d[s.key])
-const monthTick = (index: number) => view.value.months[index]?.label || ""
-const flowTooltip = (d: MonthPoint) =>
-  `<div class="viz-tip"><strong>${d.label}</strong>${flowSeries
-    .map((s) => `<div><i style="background:${s.color}"></i>${s.label}<b>${euro.format(d[s.key])}</b></div>`)
-    .join("")}</div>`
-
-const donutValue = (d: NamedAmount) => d.amount
-const donutColor = (d: NamedAmount) => categoryColors.value.color(d.name)
-
-const recurringTotal = computed(() => analysis.value.recurring.reduce((sum, item) => sum + item.amount, 0))
-const forecastRatio = computed(() => {
-  const f = analysis.value.forecast
-  return f?.average ? f.projected / f.average : null
+// ── Month pace (cumulative spend vs average month) ──
+type PacePoint = DailyPace["points"][number]
+const pace = computed(() => analysis.value.pace)
+const paceToday = computed(() => (pace.value ? pace.value.points[pace.value.today - 1] : null))
+const paceGap = computed(() => {
+  const point = paceToday.value
+  return point?.current != null && point.average != null ? point.current - point.average : null
 })
+const paceX = (d: PacePoint) => d.day
+const paceAverage = (d: PacePoint) => d.average ?? undefined
+const paceCurrent = (d: PacePoint) => d.current ?? undefined
+const paceTooltip = (d: PacePoint) =>
+  `<div class="viz-tip"><strong>Día ${d.day}</strong>${
+    d.current != null ? `<div><i style="background:var(--series-expense)"></i>Este mes<b>${euro.format(d.current)}</b></div>` : ""
+  }${d.average != null ? `<div><i style="background:var(--series-other)"></i>Mes medio<b>${euro.format(d.average)}</b></div>` : ""}</div>`
+
+// ── Categories with change vs previous period ──
+const categoryRows = computed(() => {
+  const previous = analysis.value.compare?.previousByCategory || {}
+  const max = Math.max(...view.value.categories.map((c) => c.amount), 1)
+  return view.value.categories.slice(0, 10).map((item) => {
+    const before = previous[item.name] || 0
+    return { ...item, width: (item.amount / max) * 100, delta: item.amount - before, pct: before > 0 ? (item.amount - before) / before : null, hasPrevious: Boolean(analysis.value.compare) }
+  })
+})
+
+const recurringTotal = computed(() => analysis.value.recurring.reduce((sum, item) => sum + item.monthly, 0))
+const topInsights = computed(() => analysis.value.insights.slice(0, 6))
 </script>
 
 <template>
   <div class="flex flex-wrap gap-2">
-    <Badge v-for="item in analysis.insights" :key="item" variant="secondary" class="whitespace-normal text-left">{{ item }}</Badge>
-  </div>
-  <div v-if="analysis.trendBadges.length" class="space-y-2">
-    <p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">Último mes completo</p>
-    <div class="flex flex-wrap gap-2">
-      <Badge v-for="item in analysis.trendBadges" :key="item" variant="outline" class="whitespace-normal text-left">{{ item }}</Badge>
-    </div>
+    <Badge v-for="item in topInsights" :key="item" variant="secondary" class="whitespace-normal text-left">{{ item }}</Badge>
   </div>
 
-  <Card v-if="analysis.forecast && analysis.forecast.daysElapsed < analysis.forecast.daysInMonth">
-    <CardHeader>
-      <CardDescription>Previsión de {{ analysis.forecast.label }} · día {{ analysis.forecast.daysElapsed }} de {{ analysis.forecast.daysInMonth }}</CardDescription>
-      <CardTitle class="text-2xl tabular-nums">~{{ euroWhole.format(analysis.forecast.projected) }}</CardTitle>
-    </CardHeader>
-    <CardContent class="space-y-2 text-sm">
-      <div class="h-2 overflow-hidden rounded-full bg-muted" role="img" :aria-label="`Gastado ${euroWhole.format(analysis.forecast.spent)} de ${euroWhole.format(analysis.forecast.projected)} previstos`">
-        <div class="h-full rounded-full bg-foreground" :style="{ width: `${Math.min(100, (analysis.forecast.spent / Math.max(analysis.forecast.projected, 1)) * 100)}%` }" />
-      </div>
-      <p class="text-muted-foreground">
-        Llevas {{ euroWhole.format(analysis.forecast.spent) }}.
-        <template v-if="analysis.forecast.pending > 0">Quedan ~{{ euroWhole.format(analysis.forecast.pending) }} en recibos fijos por cobrar.</template>
-        <template v-if="analysis.forecast.average && forecastRatio">
-          Tu media es {{ euroWhole.format(analysis.forecast.average) }}:
-          <strong :class="forecastRatio > 1.05 ? 'text-rose-700' : forecastRatio < 0.95 ? 'text-emerald-700' : ''">
-            {{ forecastRatio > 1.05 ? `${Math.round((forecastRatio - 1) * 100)} % por encima` : forecastRatio < 0.95 ? `${Math.round((1 - forecastRatio) * 100)} % por debajo` : "en línea" }}
-          </strong>.
-        </template>
-      </p>
-    </CardContent>
-  </Card>
-
-  <section class="grid gap-3 lg:grid-cols-5">
+  <!-- Month pace -->
+  <section v-if="pace && analysis.forecast" class="grid gap-3 lg:grid-cols-5">
     <Card class="lg:col-span-3">
       <CardHeader>
-        <CardTitle>Ingresos frente a gastos</CardTitle>
-        <CardDescription>Por mes · el ahorro no cuenta como gasto</CardDescription>
+        <CardTitle>Ritmo de gasto en {{ pace.label }}</CardTitle>
+        <CardDescription>
+          Acumulado día a día frente a tu mes medio (últimos 3 meses)
+        </CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
         <ul class="flex flex-wrap gap-4 text-xs text-muted-foreground">
-          <li v-for="s in flowSeries" :key="s.key" class="flex items-center gap-1.5">
-            <span class="size-2.5 rounded-sm" :style="{ background: s.color }" />{{ s.label }}
-          </li>
+          <li class="flex items-center gap-1.5"><span class="h-0.5 w-4 rounded" style="background: var(--series-expense)" />Este mes</li>
+          <li class="flex items-center gap-1.5"><span class="h-0.5 w-4 rounded" style="background: var(--series-other)" />Mes medio</li>
         </ul>
-        <div class="h-[260px] w-full">
-          <VisXYContainer :data="view.months" :height="260" :padding="{ top: 8 }">
-            <VisGroupedBar :x="x" :y="flowY" :color="flowSeries.map((s) => s.color)" :rounded-corners="4" :group-padding="0.2" :bar-padding="0.15" />
-            <VisAxis type="x" :tick-format="monthTick" :tick-line="false" :domain-line="false" :grid-line="false" :num-ticks="view.months.length" />
+        <div class="h-[220px] w-full">
+          <VisXYContainer :data="pace.points" :height="220" :padding="{ top: 8, right: 8 }">
+            <VisLine :x="paceX" :y="paceAverage" color="var(--series-other)" :line-width="2" />
+            <VisLine :x="paceX" :y="paceCurrent" color="var(--series-expense)" :line-width="2" />
+            <VisAxis type="x" :num-ticks="6" :tick-line="false" :domain-line="false" :grid-line="false" :tick-format="(d: number) => `día ${d}`" />
             <VisAxis type="y" :num-ticks="4" :tick-line="false" :domain-line="false" :tick-format="(v: number) => euroWhole.format(v)" />
-            <VisCrosshair :template="flowTooltip" color="transparent" />
+            <VisCrosshair :template="paceTooltip" :color="['var(--series-other)', 'var(--series-expense)']" />
             <VisTooltip />
           </VisXYContainer>
         </div>
       </CardContent>
     </Card>
+
     <Card class="lg:col-span-2">
       <CardHeader>
-        <CardTitle>Dónde se va</CardTitle>
-        <CardDescription>Por categoría · toca para ver movimientos</CardDescription>
+        <CardDescription>Previsión de cierre · día {{ analysis.forecast.daysElapsed }} de {{ analysis.forecast.daysInMonth }}</CardDescription>
+        <CardTitle class="text-3xl tabular-nums">~{{ euroWhole.format(analysis.forecast.projected) }}</CardTitle>
       </CardHeader>
-      <CardContent class="grid items-center gap-3 sm:grid-cols-[150px_1fr]">
-        <div class="mx-auto h-[150px] w-[150px]">
-          <VisSingleContainer :data="view.categories" :height="150">
-            <VisDonut :value="donutValue" :color="donutColor" :arc-width="16" :pad-angle="0.02" :central-label="euroWhole.format(view.expense)" central-sub-label="gastado" />
-          </VisSingleContainer>
-        </div>
+      <CardContent class="space-y-3 text-sm">
+        <dl class="grid grid-cols-2 gap-x-4 gap-y-2">
+          <dt class="text-muted-foreground">Llevas</dt>
+          <dd class="text-right tabular-nums">{{ euroWhole.format(analysis.forecast.spent) }}</dd>
+          <template v-if="paceGap != null">
+            <dt class="text-muted-foreground">Vs mes medio a hoy</dt>
+            <dd class="text-right"><DeltaNote :delta="paceGap" /></dd>
+          </template>
+          <template v-if="analysis.forecast.average">
+            <dt class="text-muted-foreground">Tu media mensual</dt>
+            <dd class="text-right tabular-nums">{{ euroWhole.format(analysis.forecast.average) }}</dd>
+          </template>
+          <template v-if="analysis.forecast.pending > 0">
+            <dt class="text-muted-foreground">Recibos por cobrar</dt>
+            <dd class="text-right tabular-nums">{{ euroWhole.format(analysis.forecast.pending) }}</dd>
+          </template>
+          <dt class="text-muted-foreground">Compras &lt; {{ view.smallPurchases.threshold }} € (periodo)</dt>
+          <dd class="text-right tabular-nums">{{ view.smallPurchases.count }} · {{ euroWhole.format(view.smallPurchases.total) }}</dd>
+          <template v-if="Math.abs(view.bizumNet) >= 1">
+            <dt class="text-muted-foreground">Bizum neto (periodo)</dt>
+            <dd class="text-right tabular-nums">{{ view.bizumNet >= 0 ? "+" : "−" }}{{ euroWhole.format(Math.abs(view.bizumNet)) }}</dd>
+          </template>
+        </dl>
+        <p class="text-xs text-muted-foreground">
+          La previsión proyecta solo el gasto del día a día; recibos, transferencias y compras de más de 100 € cuentan una vez.
+        </p>
+      </CardContent>
+    </Card>
+  </section>
+
+  <!-- Categories and merchants -->
+  <section class="grid gap-3 lg:grid-cols-5">
+    <Card class="lg:col-span-3">
+      <CardHeader>
+        <CardTitle>En qué gastas</CardTitle>
+        <CardDescription>
+          {{ euroWhole.format(view.expense) }} en el periodo<template v-if="analysis.compare"> · cambio frente al periodo anterior</template> · toca una categoría para ver sus movimientos
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
         <ul class="space-y-1">
-          <li v-for="item in view.categories.slice(0, 8)" :key="item.name">
-            <button type="button" class="flex min-h-9 w-full items-center justify-between gap-2 rounded-md px-1 text-left text-sm hover:bg-muted/60" @click="openCategory(item.name)">
+          <li v-for="item in categoryRows" :key="item.name">
+            <button type="button" class="grid w-full grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-3 rounded-md px-1 py-1.5 text-left text-sm hover:bg-muted/60 sm:grid-cols-[minmax(0,11rem)_1fr_auto_6.5rem]" @click="openCategory(item.name)">
               <span class="flex min-w-0 items-center gap-2">
                 <span class="size-2.5 shrink-0 rounded-sm" :style="{ background: categoryColors.color(item.name) }" />
                 <span class="truncate">{{ item.name }}</span>
               </span>
-              <span class="tabular-nums text-muted-foreground">{{ Math.round(item.share * 100) }} % · {{ euroWhole.format(item.amount) }}</span>
+              <span class="h-2 overflow-hidden rounded-full bg-muted">
+                <span class="block h-full rounded-full" :style="{ width: `${Math.max(2, item.width)}%`, background: categoryColors.color(item.name) }" />
+              </span>
+              <span class="text-right tabular-nums">{{ euroWhole.format(item.amount) }} <span class="text-xs text-muted-foreground">{{ Math.round(item.share * 100) }} %</span></span>
+              <span class="hidden text-right text-xs sm:block">
+                <DeltaNote v-if="item.hasPrevious" :delta="item.delta" :pct="item.pct" />
+              </span>
+            </button>
+          </li>
+        </ul>
+        <p v-if="!categoryRows.length" class="text-sm text-muted-foreground">Sin gastos en este periodo.</p>
+      </CardContent>
+    </Card>
+
+    <Card class="lg:col-span-2">
+      <CardHeader>
+        <CardTitle>Dónde más gastas</CardTitle>
+        <CardDescription>Comercios y destinatarios del periodo</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul class="divide-y">
+          <li v-for="item in view.merchants.slice(0, 8)" :key="item.name">
+            <button type="button" class="flex w-full items-center justify-between gap-3 py-2 text-left text-sm hover:bg-muted/40" @click="openMerchant(item.name)">
+              <span class="min-w-0">
+                <span class="block truncate font-medium">{{ item.name }}</span>
+                <span class="text-xs text-muted-foreground">{{ item.category }} · {{ item.count }} {{ item.count === 1 ? "pago" : "pagos" }} · media {{ euro.format(item.amount / Math.max(item.count || 1, 1)) }}</span>
+              </span>
+              <strong class="shrink-0 tabular-nums">{{ euroWhole.format(item.amount) }}</strong>
             </button>
           </li>
         </ul>
@@ -121,26 +167,79 @@ const forecastRatio = computed(() => {
     </Card>
   </section>
 
+  <!-- Subscriptions and advice -->
+  <section class="grid gap-3 lg:grid-cols-2">
+    <Card>
+      <CardHeader>
+        <CardTitle>Suscripciones y recibos</CardTitle>
+        <CardDescription>
+          <template v-if="analysis.recurring.length">{{ analysis.recurring.length }} activos · ~{{ euro.format(recurringTotal) }}/mes · {{ euroWhole.format(recurringTotal * 12) }}/año</template>
+          <template v-else>Se detectan por su ritmo de cobro (mensual o anual)</template>
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-1">
+        <div v-for="item in analysis.recurring" :key="item.key" class="flex items-start justify-between gap-3 border-t py-2 first:border-0">
+          <div class="min-w-0">
+            <p class="flex flex-wrap items-center gap-2 font-medium">
+              <span class="truncate">{{ item.name }}</span>
+              <Badge v-if="item.status === 'increase'" variant="outline" class="border-rose-300 text-rose-700">▲ Sube {{ euro.format(item.amount - item.previousAmount) }}</Badge>
+              <Badge v-else-if="item.status === 'new'" variant="outline">Nueva</Badge>
+            </p>
+            <p class="text-xs text-muted-foreground">
+              {{ item.category }} · {{ item.cadence === "yearly" ? "anual" : "mensual" }} · {{ item.count }} cobros ·
+              {{ item.chargedThisMonth ? `cobrado el ${formatDay(item.lastDate)}` : `próximo ~${formatDay(item.nextDate)}` }}
+            </p>
+          </div>
+          <div class="shrink-0 text-right">
+            <strong class="tabular-nums">{{ euro.format(item.amount) }}</strong><span class="text-xs text-muted-foreground">/{{ item.cadence === "yearly" ? "año" : "mes" }}</span>
+            <p class="text-xs text-muted-foreground tabular-nums">{{ euroWhole.format(item.annual) }}/año</p>
+          </div>
+        </div>
+        <p v-if="!analysis.recurring.length" class="text-sm text-muted-foreground">Con 2–3 cobros regulares aparecerán aquí tus suscripciones y recibos.</p>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Qué mejorar</CardTitle>
+        <CardDescription>Calculado a partir de tus datos</CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <ol class="list-decimal space-y-2 pl-4 text-sm">
+          <li v-for="item in analysis.advice.actions" :key="item">{{ item }}</li>
+        </ol>
+        <div class="space-y-1 border-t pt-3">
+          <p v-for="item in analysis.advice.summary" :key="item" class="text-sm text-muted-foreground">{{ item }}</p>
+        </div>
+        <Button variant="outline" class="min-h-10" @click="copyChatgpt">Copiar resumen para ChatGPT</Button>
+      </CardContent>
+    </Card>
+  </section>
+
+  <!-- Budgets -->
   <Card>
     <CardHeader class="flex flex-row flex-wrap items-start justify-between gap-3">
       <div>
-        <CardTitle>Presupuestos</CardTitle>
-        <CardDescription>Límites mensuales por categoría · avisos de ritmo</CardDescription>
+        <CardTitle>Presupuestos del mes</CardTitle>
+        <CardDescription>Límites por categoría con aviso si vas a pasarte</CardDescription>
       </div>
-      <Button size="sm" class="min-h-10" @click="persistBudgets">Guardar límites</Button>
+      <div class="flex gap-2">
+        <Button v-if="editingBudgets" size="sm" class="min-h-10" @click="persistBudgets(); editingBudgets = false">Guardar</Button>
+        <Button size="sm" variant="outline" class="min-h-10" @click="editingBudgets = !editingBudgets">{{ editingBudgets ? "Cerrar" : "Editar límites" }}</Button>
+      </div>
     </CardHeader>
     <CardContent class="space-y-4">
-      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div v-if="editingBudgets" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label v-for="name in BUDGET_CATEGORIES" :key="name" class="grid gap-1 text-xs text-muted-foreground">
           {{ name }} (€/mes)
           <Input v-model="budgetDraft[name]" type="number" min="0" step="10" class="min-h-11" placeholder="Sin tope" />
         </label>
       </div>
-      <div v-if="analysis.budgets.length" class="space-y-3">
-        <div v-for="item in analysis.budgets" :key="item.category" class="space-y-1.5 border-t pt-3 first:border-0 first:pt-0">
+      <div v-if="analysis.budgets.length" class="grid gap-x-6 gap-y-3 md:grid-cols-2">
+        <div v-for="item in analysis.budgets" :key="item.category" class="space-y-1.5">
           <div class="flex items-center justify-between gap-2 text-sm">
             <span class="font-medium">{{ item.category }}</span>
-            <span class="tabular-nums">{{ euro.format(item.spent) }} / {{ euro.format(item.limit) }}</span>
+            <span class="tabular-nums">{{ euroWhole.format(item.spent) }} / {{ euroWhole.format(item.limit) }}</span>
           </div>
           <div class="h-2 overflow-hidden rounded-full bg-muted">
             <div
@@ -153,54 +252,9 @@ const forecastRatio = computed(() => {
           <p v-else-if="item.paceNote" class="text-xs text-amber-700">⚠ {{ item.paceNote }}</p>
         </div>
       </div>
-      <p v-else class="text-sm text-muted-foreground">Define un tope (p. ej. Restauración 200) y guárdalo.</p>
+      <p v-else-if="!editingBudgets" class="text-sm text-muted-foreground">Sin límites. Pulsa «Editar límites» y pon, por ejemplo, Restauración 150 €.</p>
     </CardContent>
   </Card>
-
-  <section class="grid gap-3 lg:grid-cols-2">
-    <Card>
-      <CardHeader>
-        <CardTitle>Qué mejorar</CardTitle>
-        <CardDescription>Consejo calculado a partir de tus datos</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-3">
-        <p v-for="item in analysis.advice.summary" :key="item" class="text-sm text-muted-foreground">{{ item }}</p>
-        <ol class="list-decimal space-y-2 pl-4 text-sm">
-          <li v-for="item in analysis.advice.actions" :key="item">{{ item }}</li>
-        </ol>
-        <Button variant="outline" class="min-h-10" @click="copyChatgpt">Copiar briefing para ChatGPT</Button>
-      </CardContent>
-    </Card>
-    <Card>
-      <CardHeader>
-        <CardTitle>Suscripciones y recibos fijos</CardTitle>
-        <CardDescription>
-          <template v-if="analysis.recurring.length">~{{ euro.format(recurringTotal) }}/mes · {{ euroWhole.format(recurringTotal * 12) }}/año</template>
-          <template v-else>Cargos que se repiten cada mes</template>
-        </CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-3">
-        <div v-for="item in analysis.recurring" :key="item.key" class="flex items-start justify-between gap-3 border-t pt-3 first:border-0 first:pt-0">
-          <div class="min-w-0">
-            <p class="flex flex-wrap items-center gap-2 font-medium">
-              <span class="truncate">{{ item.name }}</span>
-              <Badge v-if="item.status === 'increase'" variant="outline" class="border-rose-300 text-rose-700">▲ Sube {{ euro.format(item.amount - item.previousAmount) }}</Badge>
-              <Badge v-else-if="item.status === 'new'" variant="outline">Nueva</Badge>
-            </p>
-            <p class="text-xs text-muted-foreground">
-              {{ item.category }} · {{ item.months }} meses ·
-              {{ item.chargedThisMonth ? `cobrado ${formatDay(item.lastDate)}` : `próximo ~${formatDay(item.nextDate)}` }}
-            </p>
-          </div>
-          <div class="shrink-0 text-right">
-            <strong class="tabular-nums">{{ euro.format(item.amount) }}</strong>
-            <p class="text-xs text-muted-foreground tabular-nums">{{ euroWhole.format(item.annual) }}/año</p>
-          </div>
-        </div>
-        <p v-if="!analysis.recurring.length" class="text-sm text-muted-foreground">Con 2–3 meses de historial aparecerán suscripciones y recibos estables.</p>
-      </CardContent>
-    </Card>
-  </section>
 
   <BankCard />
 
@@ -214,18 +268,21 @@ const forecastRatio = computed(() => {
             <strong :class="analysis.cushion.months < 3 ? 'text-amber-700' : ''">{{ analysis.cushion.months.toFixed(1) }} meses</strong>
             de gasto ({{ euroWhole.format(analysis.cushion.avgExpense) }}/mes)
           </template>
-          <template v-else>Saldo según el último extracto</template>
+          <template v-else>Saldo según el último movimiento</template>
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div v-for="item in accounts" :key="item.name" class="flex items-center justify-between gap-3 border-t py-2 first:border-0">
           <div class="min-w-0">
-            <p class="truncate font-medium">{{ item.name }}</p>
+            <p class="flex items-center gap-2 truncate font-medium">
+              {{ item.name }}
+              <Badge v-if="savingsAccounts.includes(item.name)" variant="outline">Ahorro</Badge>
+            </p>
             <p class="text-xs text-muted-foreground">
-              {{ item.balance == null ? "Sin saldo en extracto" : `Saldo ${euro.format(item.balance)} · ${formatDay(item.balanceDate!)}` }}
+              {{ item.balance == null ? "Sin saldo" : `Saldo ${euro.format(item.balance)} · ${formatDay(item.balanceDate!)}` }}
             </p>
           </div>
-          <Button size="sm" class="min-h-10" variant="outline" @click="emit('import-account', item.name)">Actualizar</Button>
+          <Button size="sm" class="min-h-10" variant="ghost" @click="emit('import-account', item.name)">Importar Excel</Button>
         </div>
         <Button v-if="accounts.length" variant="ghost" size="sm" class="mt-2" @click="clearLocal">Borrar copia local</Button>
       </CardContent>
@@ -240,7 +297,7 @@ const forecastRatio = computed(() => {
           v-for="item in view.biggest"
           :key="`${item.date}-${item.name}-${item.amount}`"
           type="button"
-          class="flex min-h-12 w-full items-start justify-between gap-3 border-t pt-2 text-left first:border-0 first:pt-0"
+          class="flex min-h-11 w-full items-start justify-between gap-3 border-t pt-2 text-left first:border-0 first:pt-0"
           @click="openMerchant(item.name)"
         >
           <div class="min-w-0">

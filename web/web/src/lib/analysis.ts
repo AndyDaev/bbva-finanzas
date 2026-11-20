@@ -82,16 +82,30 @@ export type RecurringCharge = {
   key: string
   name: string
   category: string
-  /** Latest monthly amount (current price). */
+  cadence: "monthly" | "yearly"
+  /** Latest charge (current price). */
   amount: number
-  /** Median monthly amount before the latest charge. */
+  /** Median charge before the latest one. */
   previousAmount: number
+  /** Cost per month (yearly charges are spread over 12). */
+  monthly: number
   annual: number
+  /** Number of charges seen. */
+  count: number
+  /** Kept for compatibility: distinct months with a charge. */
   months: number
   lastDate: string
   nextDate: string
   chargedThisMonth: boolean
   status: "stable" | "increase" | "new"
+}
+
+/** Cumulative spend by day of month: this month against the average of recent months. */
+export type DailyPace = {
+  month: string
+  label: string
+  today: number
+  points: Array<{ day: number, current: number | null, average: number | null }>
 }
 
 export type Advice = {
@@ -120,6 +134,8 @@ export type View = {
   fixedSpend: number
   flexibleSpend: number
   bizumNet: number
+  /** Small "ant" purchases under SMALL_PURCHASE euros. */
+  smallPurchases: { count: number, total: number, threshold: number }
   months: MonthPoint[]
   categories: NamedAmount[]
   incomeSources: NamedAmount[]
@@ -143,6 +159,8 @@ export type PeriodCompare = {
   /** Difference in percentage points (0.05 = +5 pts). */
   savingsRate: Delta
   categories: TrendDelta[]
+  /** Spend per category in the previous period, for per-row deltas. */
+  previousByCategory: Record<string, number>
 }
 
 export type Forecast = {
@@ -169,6 +187,8 @@ export type Analysis = {
   budgets: BudgetStatus[]
   recurring: RecurringCharge[]
   forecast: Forecast | null
+  pace: DailyPace | null
+  savingsAccounts: string[]
   balances: BalanceSeries
   cushion: Cushion | null
   insights: string[]
@@ -194,11 +214,11 @@ export function normalizeTransactions(transactions: Transaction[], rules: UserRu
 
 // ─────────────────────────── Aggregation ───────────────────────────
 
-type Kind = "skip" | "savings" | "bizum" | "refund" | "income" | "expense"
+type Kind = "transfer" | "savings" | "bizum" | "refund" | "income" | "expense"
 
 function classify(tx: Transaction): Kind {
   const c = tx.category
-  if (c === "Traspaso interno") return "skip"
+  if (c === "Traspaso interno") return "transfer"
   if (c === "Ahorro") return "savings"
   if (c === "Bizum recibido" || c === "Bizum enviado") return "bizum"
   if (tx.amount > 0 && c === "Devolución") return "refund"
@@ -254,7 +274,38 @@ function emptyMonth(): MonthAgg {
  * One pass over (already normalized) transactions. Refunds are netted against
  * their category and merchant in the month they arrive; Bizum is netted per month.
  */
-function aggregate(transactions: Transaction[], tickets: TicketLike[], sortedRules: UserRule[]): Aggregate {
+/**
+ * Accounts that are savings pots: almost everything in them is a transfer between own
+ * accounts (e.g. BBVA "Programa Tu Cuenta" / a savings account).
+ */
+export function detectSavingsAccounts(transactions: Transaction[]) {
+  const stats = new Map<string, { total: number, internal: number }>()
+  for (const tx of transactions) {
+    const entry = stats.get(tx.account) || { total: 0, internal: 0 }
+    entry.total += 1
+    if (tx.category === "Traspaso interno" || tx.category === "Ahorro") entry.internal += 1
+    stats.set(tx.account, entry)
+  }
+  return [...stats.entries()].filter(([, s]) => s.total >= 5 && s.internal / s.total >= 0.8).map(([name]) => name)
+}
+
+type SavingsContext = { accounts: Set<string>, inView: boolean }
+
+function savingsContext(transactions: Transaction[], savingsAccounts: string[] = []): SavingsContext {
+  const accounts = new Set(savingsAccounts)
+  return { accounts, inView: transactions.some((tx) => accounts.has(tx.account)) }
+}
+
+/**
+ * Savings = money that ends up in savings accounts. If a savings account is in view, count its
+ * side of the transfers; otherwise count what left the current accounts to other own accounts.
+ */
+function savingsDelta(tx: Transaction, context: SavingsContext) {
+  if (context.accounts.has(tx.account)) return tx.amount
+  return context.inView ? 0 : -tx.amount
+}
+
+function aggregate(transactions: Transaction[], tickets: TicketLike[], sortedRules: UserRule[], savings: SavingsContext): Aggregate {
   const months = new Map<string, MonthAgg>()
   const expenses: Transaction[] = []
   const linked = new Map<string, TicketLike>()
@@ -271,9 +322,12 @@ function aggregate(transactions: Transaction[], tickets: TicketLike[], sortedRul
 
   for (const tx of transactions) {
     const kind = classify(tx)
-    if (kind === "skip") continue
     const agg = bucket(monthKey(tx.date))
 
+    if (kind === "transfer") {
+      agg.savings += savingsDelta(tx, savings)
+      continue
+    }
     if (kind === "savings") {
       agg.savings -= tx.amount
       continue
@@ -350,17 +404,18 @@ function completeMonths(months: Map<string, MonthAgg>, todayIso: string) {
 }
 
 const MIN_TREND_EUR = 15
+const SMALL_PURCHASE = 5
 
 // ──────────────────────────── Period view ────────────────────────────
 
 export function buildView(
   transactions: Transaction[],
   tickets: TicketLike[] = [],
-  options: { today?: string, rules?: UserRule[], from?: string, to?: string } = {},
+  options: { today?: string, rules?: UserRule[], from?: string, to?: string, savingsAccounts?: string[] } = {},
 ): View {
   const todayIso = options.today || isoDate(new Date())
   const sortedRules = sortRules(options.rules || [])
-  const { months: monthMap, expenses } = aggregate(transactions, tickets, sortedRules)
+  const { months: monthMap, expenses } = aggregate(transactions, tickets, sortedRules, savingsContext(transactions, options.savingsAccounts))
 
   const byCategory = new Map<string, number>()
   const byIncome = new Map<string, number>()
@@ -458,7 +513,19 @@ export function buildView(
   const avgExpense = complete.length ? sum(complete.map(([, agg]) => agg.expense)) / complete.length : expense
   const net = income - expense
 
+  // Note: BBVA only sends the booking date (weekend card payments book on Monday), so no
+  // day-of-week analysis is attempted.
+  const smallPurchases = { count: 0, total: 0, threshold: SMALL_PURCHASE }
+  for (const tx of expenses) {
+    const spent = -tx.amount
+    if (spent < SMALL_PURCHASE && !isFixedCategory(tx.category)) {
+      smallPurchases.count += 1
+      smallPurchases.total += spent
+    }
+  }
+
   return {
+    smallPurchases,
     income,
     expense,
     toSavings,
@@ -577,6 +644,7 @@ export function comparePeriods(current: View, previous: View, range: { from: str
       "category",
       5,
     ),
+    previousByCategory: Object.fromEntries(previous.categories.map((item) => [item.name, item.amount])),
   }
 }
 
@@ -617,93 +685,200 @@ function buildBudgetStatuses(budgets: Budget[], months: Map<string, MonthAgg>, t
 
 // ─────────────────────── Recurring / subscriptions ───────────────────────
 
+/** Categories where a 2-charge history is already enough to flag a new subscription. */
+const SUBSCRIPTION_LIKE = new Set(["Suscripciones", "Telecomunicaciones", "Suministros", "Recibos", "Vivienda", "Impuestos y seguros"])
+
+type Charge = { date: string, amount: number }
+
+/**
+ * Detects subscriptions and bills from the charge pattern of each merchant:
+ *  - monthly: consecutive charges ~1 month apart (20–40 days) with a stable price
+ *  - yearly:  charges ~1 year apart with a similar price
+ * Price changes are allowed (and reported) as long as recent charges agree.
+ */
 export function detectRecurring(transactions: Transaction[], todayIso: string): RecurringCharge[] {
-  const byKey = new Map<string, { name: string, category: string, months: Map<string, { amount: number, count: number, lastDate: string }> }>()
+  const byKey = new Map<string, { name: string, category: string, charges: Charge[] }>()
   let latest = ""
   for (const tx of transactions) {
     if (tx.date > latest) latest = tx.date
     if (classify(tx) !== "expense") continue
+    // Everyday shopping is never a subscription; rent paid by transfer can be, so transfers stay in.
+    if (["Efectivo", "Supermercado", "Restauración"].includes(tx.category)) continue
     const name = cleanName(tx.text)
-    const key = merchantKey(name)
+    const key = merchantKey(tx.text)
     if (!key) continue
-    const entry = byKey.get(key) || { name, category: tx.category, months: new Map() }
-    const month = monthKey(tx.date)
-    const slot = entry.months.get(month) || { amount: 0, count: 0, lastDate: "" }
-    slot.amount += -tx.amount
-    slot.count += 1
-    if (tx.date > slot.lastDate) {
-      slot.lastDate = tx.date
-      entry.name = name
-      entry.category = tx.category
-    }
-    entry.months.set(month, slot)
+    const entry = byKey.get(key) || { name, category: tx.category, charges: [] }
+    entry.charges.push({ date: tx.date, amount: -tx.amount })
     byKey.set(key, entry)
   }
 
-  // Reference date: today, or the last imported movement if the data is older.
+  // Reference date: today, or the last synced movement if the data is older.
   const reference = latest && latest < todayIso ? latest : todayIso
   const refMonth = monthKey(reference)
   const result: RecurringCharge[] = []
 
+  // A merchant may bill several subscriptions (e.g. two Google plans): when the merchant as a
+  // whole has no clear rhythm, also try each price point on its own.
+  const groups: Array<[string, { name: string, category: string, charges: Charge[] }]> = []
   for (const [key, entry] of byKey) {
-    const months = [...entry.months.entries()].sort(([a], [b]) => a.localeCompare(b))
-    const [lastMonth, last] = months[months.length - 1]!
-    if (monthDiff(lastMonth, refMonth) > 1) continue // cancelled / not seen lately
-    const values = months.map(([, slot]) => slot.amount)
-    const charges = sum(months.map(([, slot]) => slot.count))
-    const span = monthDiff(months[0]![0], lastMonth) + 1
-
-    let status: RecurringCharge["status"] | null = null
-    let previousAmount = last.amount
-    if (months.length >= 3) {
-      const med = median(values)
-      const stable = values.every((value) => Math.abs(value - med) / med < 0.18)
-      if (!stable || months.length / span < 0.6 || charges / months.length > 1.5) continue
-      previousAmount = median(values.slice(0, -1))
-      status = last.amount > previousAmount * 1.05 && last.amount - previousAmount >= 0.5 ? "increase" : "stable"
-    } else if (months.length === 2) {
-      const [a, b] = values as [number, number]
-      const firstDate = months[0]![1].lastDate
-      if (span !== 2 || charges !== 2 || Math.abs(a - b) / Math.max(a, b) > 0.05) continue
-      if (daysBetween(firstDate, reference) > 75) continue
-      status = "new"
-      previousAmount = a
+    groups.push([key, entry])
+    const byPrice = new Map<string, Charge[]>()
+    for (const charge of entry.charges) {
+      const price = charge.amount.toFixed(2)
+      byPrice.set(price, [...(byPrice.get(price) || []), charge])
     }
-    if (!status) continue
+    if (byPrice.size > 1) {
+      for (const [price, charges] of byPrice) {
+        if (charges.length >= 2) groups.push([`${key}#${price}`, { ...entry, name: `${entry.name} (${price.replace(".", ",")} €)`, charges }])
+      }
+    }
+  }
+  const found = new Set<string>()
 
+  for (const [key, entry] of groups) {
+    const baseKey = key.split("#")[0]!
+    if (found.has(baseKey)) continue
+    const charges = [...entry.charges].sort((a, b) => a.date.localeCompare(b.date))
+    if (charges.length < 2) continue
+    const last = charges[charges.length - 1]!
+    const recent = charges.slice(-6)
+    const intervals = recent.slice(1).map((charge, i) => daysBetween(recent[i]!.date, charge.date))
+    const reference3 = median(recent.slice(-3).map((c) => c.amount))
+    const similar = (amount: number, tolerance: number) => Math.abs(amount - reference3) / Math.max(reference3, 0.01) <= tolerance
+
+    let cadence: RecurringCharge["cadence"] | null = null
+    const monthlyIntervals = intervals.filter((d) => d >= 20 && d <= 40).length
+    const yearlyIntervals = intervals.filter((d) => d >= 340 && d <= 390).length
+    if (intervals.length && monthlyIntervals / intervals.length >= 0.75 && recent.filter((c) => similar(c.amount, 0.25)).length / recent.length >= 0.75) {
+      cadence = "monthly"
+    } else if (yearlyIntervals && yearlyIntervals === intervals.length && similar(recent[0]!.amount, 0.25)) {
+      cadence = "yearly"
+    }
+    if (!cadence) continue
+
+    // Only active ones: the next charge is not long overdue.
+    const period = cadence === "monthly" ? 31 : 365
+    if (daysBetween(last.date, reference) > period * 1.6) continue
+
+    let status: RecurringCharge["status"] = "stable"
+    const previousAmount = charges.length > 1 ? median(charges.slice(-4, -1).map((c) => c.amount)) : last.amount
+    if (cadence === "monthly" && charges.length === 2) {
+      // Two charges are only trusted for subscription-like categories, and flagged as new.
+      if (!SUBSCRIPTION_LIKE.has(entry.category) || !similar(charges[0]!.amount, 0.05)) continue
+      status = "new"
+    } else if (last.amount > previousAmount * 1.03 && last.amount - previousAmount >= 0.3) {
+      status = "increase"
+    } else if (cadence === "monthly" && charges.length <= 3 && daysBetween(charges[0]!.date, reference) <= 100) {
+      status = "new"
+    }
+
+    // The merchant as a whole matched: skip its per-price variants.
+    if (!key.includes("#")) found.add(baseKey)
+    const monthly = cadence === "monthly" ? last.amount : last.amount / 12
     result.push({
       key,
       name: entry.name,
       category: entry.category,
+      cadence,
       amount: last.amount,
       previousAmount,
-      annual: last.amount * 12,
-      months: months.length,
-      lastDate: last.lastDate,
-      nextDate: addMonths(last.lastDate, 1),
-      chargedThisMonth: lastMonth === refMonth,
+      monthly,
+      annual: monthly * 12,
+      count: charges.length,
+      months: new Set(charges.map((c) => monthKey(c.date))).size,
+      lastDate: last.date,
+      nextDate: cadence === "monthly" ? addMonths(last.date, 1) : addMonths(last.date, 12),
+      chargedThisMonth: monthKey(last.date) === refMonth,
       status,
     })
   }
-  return result.sort((a, b) => b.amount - a.amount)
+  return result.sort((a, b) => b.monthly - a.monthly)
+}
+
+// ───────────────────────────── Daily pace ─────────────────────────────
+
+/** Spend contribution of one movement (refunds and received Bizum reduce it). */
+function spendOf(tx: Transaction) {
+  const kind = classify(tx)
+  if (kind === "expense" || kind === "refund" || kind === "bizum") return -tx.amount
+  return 0
+}
+
+/** Cumulative spend per day this month vs the average of the last 3 complete months. */
+export function buildDailyPace(transactions: Transaction[], todayIso: string): DailyPace | null {
+  const month = monthKey(todayIso)
+  const previousMonths = [1, 2, 3].map((n) => monthKey(addMonths(`${month}-01`, -n)))
+  const perMonth = new Map<string, number[]>()
+  for (const key of [month, ...previousMonths]) perMonth.set(key, Array(32).fill(0))
+  for (const tx of transactions) {
+    const days = perMonth.get(monthKey(tx.date))
+    if (!days) continue
+    days[Number(tx.date.slice(8, 10))]! += spendOf(tx)
+  }
+  const current = perMonth.get(month)!
+  if (!current.some((value) => value !== 0)) return null
+
+  const cumulative = (days: number[], length: number) => {
+    const out: number[] = []
+    let total = 0
+    for (let day = 1; day <= length; day += 1) {
+      total += days[day] || 0
+      out.push(Math.max(0, total))
+    }
+    return out
+  }
+  const [y, m] = month.split("-").map(Number)
+  const dim = daysInMonth(y!, m! - 1)
+  const today = Math.min(dim, Number(todayIso.slice(8, 10)))
+  const history = previousMonths
+    .filter((key) => perMonth.get(key)!.some((value) => value !== 0))
+    .map((key) => {
+      const [py, pm] = key.split("-").map(Number)
+      const series = cumulative(perMonth.get(key)!, daysInMonth(py!, pm! - 1))
+      // Shorter months keep their final total for the remaining days.
+      return Array.from({ length: dim }, (_, i) => series[Math.min(i, series.length - 1)]!)
+    })
+  const currentSeries = cumulative(current, dim)
+  return {
+    month,
+    label: labelMonth(month),
+    today,
+    points: Array.from({ length: dim }, (_, i) => ({
+      day: i + 1,
+      current: i < today ? currentSeries[i]! : null,
+      average: history.length ? sum(history.map((series) => series[i]!)) / history.length : null,
+    })),
+  }
 }
 
 // ───────────────────────────── Forecast ─────────────────────────────
 
-function buildForecast(months: Map<string, MonthAgg>, recurring: RecurringCharge[], todayIso: string): Forecast | null {
+/** Spending that happens once (not a daily habit): never projected over the rest of the month. */
+const LUMPY_CATEGORIES = new Set(["Transferencias", "Vivienda", "Impuestos y seguros", "Viajes", "Efectivo"])
+const LUMPY_AMOUNT = 100
+
+function buildForecast(months: Map<string, MonthAgg>, recurring: RecurringCharge[], todayIso: string, transactions: Transaction[]): Forecast | null {
   const month = monthKey(todayIso)
   const agg = months.get(month)
   if (!agg) return null
   const [year, m] = month.split("-").map(Number)
   const dim = daysInMonth(year!, m! - 1)
   const daysElapsed = Math.min(dim, Math.max(1, Number(todayIso.slice(8, 10))))
-  const recurringKeys = new Set(recurring.map((item) => item.key))
-  let recurringSoFar = 0
-  for (const [key, merchant] of agg.merchants) if (recurringKeys.has(key)) recurringSoFar += Math.max(0, merchant.amount)
+  const recurringKeys = new Set(recurring.map((item) => item.key.split("#")[0]))
+  // Only everyday spending is extrapolated; one-offs and bills count once, as they are.
+  let lumpySoFar = 0
+  for (const tx of transactions) {
+    if (monthKey(tx.date) !== month || classify(tx) !== "expense") continue
+    const spent = -tx.amount
+    if (spent >= LUMPY_AMOUNT || LUMPY_CATEGORIES.has(tx.category) || isFixedCategory(tx.category) || recurringKeys.has(merchantKey(tx.text))) {
+      lumpySoFar += spent
+    }
+  }
+  const recurringSoFar = Math.min(lumpySoFar, agg.expense)
   const variable = Math.max(0, agg.expense - recurringSoFar)
   const pending = sum(
     recurring
-      .filter((item) => !item.chargedThisMonth && monthKey(item.nextDate) === month && item.nextDate > todayIso)
+      .filter((item) => !item.chargedThisMonth && monthKey(item.nextDate) === month && item.nextDate >= todayIso)
       .map((item) => item.amount),
   )
   const projected = recurringSoFar + pending + (daysElapsed >= dim ? variable : (variable / daysElapsed) * dim)
@@ -782,6 +957,8 @@ export function analyze(input: {
   tickets?: TicketLike[]
   budgets?: Budget[]
   rules?: UserRule[]
+  /** Savings pots (see detectSavingsAccounts), computed over all accounts. */
+  savingsAccounts?: string[]
   from: string
   to: string
   today?: string
@@ -789,17 +966,20 @@ export function analyze(input: {
   const todayIso = input.today || isoDate(new Date())
   const tickets = input.tickets || []
   const rules = input.rules || []
+  const savingsAccounts = input.savingsAccounts ?? detectSavingsAccounts(input.transactions)
   const inRange = (from: string, to: string) => input.transactions.filter((tx) => tx.date >= from && tx.date <= to)
+  const viewOptions = { today: todayIso, rules, savingsAccounts }
 
-  const view = buildView(inRange(input.from, input.to), tickets, { today: todayIso, rules, from: input.from, to: input.to })
+  const view = buildView(inRange(input.from, input.to), tickets, { ...viewOptions, from: input.from, to: input.to })
   const prev = previousRange(input.from, input.to)
-  const previousView = buildView(inRange(prev.from, prev.to), tickets, { today: todayIso, rules, from: prev.from, to: prev.to })
+  const previousView = buildView(inRange(prev.from, prev.to), tickets, { ...viewOptions, from: prev.from, to: prev.to })
   const compare = comparePeriods(view, previousView, prev)
 
-  const all = aggregate(input.transactions, tickets, sortRules(rules))
+  const all = aggregate(input.transactions, tickets, sortRules(rules), savingsContext(input.transactions, savingsAccounts))
   const recurring = detectRecurring(input.transactions, todayIso)
+  const pace = buildDailyPace(input.transactions, todayIso)
   const budgets = buildBudgetStatuses(input.budgets || [], all.months, todayIso)
-  const forecast = buildForecast(all.months, recurring, todayIso)
+  const forecast = buildForecast(all.months, recurring, todayIso, input.transactions)
   const balances = buildBalanceSeries(input.transactions, input.from, input.to)
 
   const accountBalances = accountsFromTransactions(input.transactions).filter((item) => item.balance != null)
@@ -820,6 +1000,8 @@ export function analyze(input: {
     budgets,
     recurring,
     forecast,
+    pace,
+    savingsAccounts,
     balances,
     cushion,
     insights: buildInsights(view, recurring, budgets, forecast, cushion, compare),
@@ -831,7 +1013,7 @@ export function analyze(input: {
 // ─────────────────────── Insights and advice ───────────────────────
 
 function recurringMonthly(recurring: RecurringCharge[]) {
-  return sum(recurring.map((item) => item.amount))
+  return sum(recurring.map((item) => item.monthly))
 }
 
 function buildInsights(
@@ -855,7 +1037,7 @@ function buildInsights(
     insights.push(`${item.name} ha subido de ${euro.format(item.previousAmount)} a ${euro.format(item.amount)}.`)
   }
   for (const item of recurring.filter((r) => r.status === "new")) {
-    insights.push(`Posible suscripción nueva: ${item.name} (${euro.format(item.amount)}/mes).`)
+    insights.push(`Posible suscripción nueva: ${item.name} (${euro.format(item.amount)}/${item.cadence === "yearly" ? "año" : "mes"}).`)
   }
   if (forecast && forecast.daysElapsed < forecast.daysInMonth) {
     insights.push(`Previsión de ${forecast.label}: ~${euro.format(forecast.projected)} de gasto.`)
@@ -919,6 +1101,9 @@ function buildAdvice(
   if (view.avgTicket > 0 && view.avgTicket < 12 && view.expense > 80) {
     actions.push(`Ticket medio bajo (${euro.format(view.avgTicket)}): agrupa recados en menos salidas.`)
   }
+  if (view.smallPurchases.count >= 15 && view.smallPurchases.total >= 40) {
+    actions.push(`${view.smallPurchases.count} compras de menos de ${view.smallPurchases.threshold} € suman ${euro.format(view.smallPurchases.total)}: los gastos hormiga cuentan.`)
+  }
   const fillers = [
     "Importa más meses para afinar tendencias y recurrentes.",
     "Crea reglas de categoría para lo que caiga en «Otros gastos».",
@@ -960,7 +1145,7 @@ export function chatgptBrief(analysis: Analysis) {
       "Cargos recurrentes:",
       ...analysis.recurring.map((item) => {
         const note = item.status === "increase" ? ` (subió desde ${euro.format(item.previousAmount)})` : item.status === "new" ? " (nuevo)" : ""
-        return `- ${item.name}: ~${euro.format(item.amount)}/mes, ${euro.format(item.annual)}/año${note}`
+        return `- ${item.name}: ${euro.format(item.amount)}/${item.cadence === "yearly" ? "año" : "mes"} (${euro.format(item.annual)}/año)${note}`
       }),
     )
   }

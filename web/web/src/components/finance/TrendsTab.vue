@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
-import { VisAxis, VisCrosshair, VisLine, VisScatter, VisStackedBar, VisTooltip, VisXYContainer } from "@unovis/vue"
+import { VisAxis, VisCrosshair, VisGroupedBar, VisLine, VisScatter, VisStackedBar, VisTooltip, VisXYContainer } from "@unovis/vue"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { euro, euroWhole, type MonthPoint } from "@/lib/money"
 import { useFinance } from "@/lib/useFinance"
@@ -10,6 +10,18 @@ const { analysis, view, categoryColors, openCategory } = useFinance()
 const months = computed(() => view.value.months)
 const monthTick = (index: number) => months.value[index]?.label || ""
 const x = (d: { index: number }) => d.index
+
+// ── Income, spend and savings per month ──
+const flowSeries = [
+  { key: "income", label: "Ingresos", color: "var(--series-income)" },
+  { key: "expense", label: "Gastos", color: "var(--series-expense)" },
+  { key: "savings", label: "A ahorro", color: "var(--series-savings)" },
+] as const
+const flowY = flowSeries.map((s) => (d: MonthPoint) => Math.max(0, d[s.key]))
+const flowTooltip = (d: MonthPoint) =>
+  `<div class="viz-tip"><strong>${d.label}</strong>${flowSeries
+    .map((s) => `<div><i style="background:${s.color}"></i>${s.label}<b>${euro.format(d[s.key])}</b></div>`)
+    .join("")}</div>`
 
 // ── Stacked spend by category: the stable top categories + "Resto" ──
 const RESTO = "Resto"
@@ -83,6 +95,29 @@ function cellTone(value: number, average: number) {
 
 <template>
   <p v-if="months.length < 2" class="text-sm text-muted-foreground">Elige un periodo de al menos dos meses (p. ej. «6 meses») para ver la evolución.</p>
+
+  <Card>
+    <CardHeader>
+      <CardTitle>Ingresos, gastos y ahorro por mes</CardTitle>
+      <CardDescription>Los traspasos entre tus cuentas no cuentan como gasto; el ahorro es lo que acaba en tu cuenta de ahorro</CardDescription>
+    </CardHeader>
+    <CardContent class="space-y-3">
+      <ul class="flex flex-wrap gap-4 text-xs text-muted-foreground">
+        <li v-for="s in flowSeries" :key="s.key" class="flex items-center gap-1.5">
+          <span class="size-2.5 rounded-sm" :style="{ background: s.color }" />{{ s.label }}
+        </li>
+      </ul>
+      <div class="h-[260px] w-full">
+        <VisXYContainer :data="months" :height="260" :padding="{ top: 8 }">
+          <VisGroupedBar :x="x" :y="flowY" :color="flowSeries.map((s) => s.color)" :rounded-corners="4" :group-padding="0.2" :bar-padding="0.15" />
+          <VisAxis type="x" :tick-format="monthTick" :tick-line="false" :domain-line="false" :grid-line="false" :num-ticks="months.length" />
+          <VisAxis type="y" :num-ticks="4" :tick-line="false" :domain-line="false" :tick-format="(v: number) => euroWhole.format(v)" />
+          <VisCrosshair :template="flowTooltip" color="transparent" />
+          <VisTooltip />
+        </VisXYContainer>
+      </div>
+    </CardContent>
+  </Card>
 
   <Card>
     <CardHeader>
