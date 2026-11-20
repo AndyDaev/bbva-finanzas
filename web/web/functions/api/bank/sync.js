@@ -7,6 +7,7 @@ import {
   fetchBookedBalance,
   isConfigured,
   mapBankTransaction,
+  matchExistingAccount,
   planBankUpsert,
 } from "../../_lib/enablebanking.js"
 
@@ -54,6 +55,21 @@ export async function onRequestPost(context) {
       try {
         const raw = await fetchRows(env, account, dateFrom, request)
         let rows = raw.map((item) => mapBankTransaction(item, account.accountName, account.uid)).filter(Boolean)
+        // First sync: adopt the name of the Excel-imported account this bank account matches,
+        // so both sources merge instead of duplicating.
+        if (!session.lastSyncAt && rows.length) {
+          const candidates = await db
+            .prepare(`SELECT id, date, amount, account FROM transactions WHERE date >= ? AND id NOT LIKE 'eb\\_%' ESCAPE '\\'`)
+            .bind(dateFrom)
+            .all()
+          const claimed = new Set(session.accounts.filter((item) => item.uid !== account.uid).map((item) => item.accountName))
+          const match = matchExistingAccount((candidates.results || []).filter((row) => !claimed.has(row.account)), rows)
+          if (match && match !== account.accountName) {
+            account.accountName = match
+            rows = rows.map((row) => ({ ...row, account: match }))
+            await db.prepare(`UPDATE bank_sessions SET accounts_json = ? WHERE id = ?`).bind(JSON.stringify(session.accounts), session.id).run()
+          }
+        }
         // Balances can only be rebuilt from a full history fetch, not an incremental window.
         if (!session.lastSyncAt) {
           const booked = await fetchBookedBalance(env, account.uid, request).catch(() => null)

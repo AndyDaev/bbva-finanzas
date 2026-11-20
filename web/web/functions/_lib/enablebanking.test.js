@@ -5,6 +5,7 @@ import {
   createJwt,
   mapBankTransaction,
   maskIban,
+  matchExistingAccount,
   pickBookedBalance,
   planBankUpsert,
 } from "./enablebanking.js"
@@ -78,6 +79,29 @@ describe("mapping", () => {
 
   it("masks IBANs", () => {
     expect(maskIban("ES91 2100 0418 4502 0005 1332")).toBe("ES91 •••• 1332")
+  })
+})
+
+describe("matchExistingAccount", () => {
+  const bank = [
+    { date: "2026-11-02", amount: -10 },
+    { date: "2026-11-03", amount: -20 },
+    { date: "2026-11-04", amount: 1500 },
+    { date: "2026-11-05", amount: -7.5 },
+  ]
+  it("adopts the Excel account that shares most movements", () => {
+    const existing = [
+      { id: "tx_1", account: "July - Nov", date: "2026-11-02", amount: -10 },
+      { id: "tx_2", account: "July - Nov", date: "2026-11-03", amount: -20 },
+      { id: "tx_3", account: "July - Nov", date: "2026-11-04", amount: 1500 },
+      { id: "tx_4", account: "Otra", date: "2026-11-02", amount: -10 },
+      { id: "tx_5", account: "Otra", date: "2026-11-09", amount: -99 },
+      { id: "eb_x", account: "BBVA 1", date: "2026-11-03", amount: -20 },
+    ]
+    expect(matchExistingAccount(existing, bank)).toBe("July - Nov")
+  })
+  it("returns null when nothing matches well enough", () => {
+    expect(matchExistingAccount([{ id: "tx_1", account: "A", date: "2026-11-02", amount: -10 }], bank)).toBeNull()
   })
 })
 

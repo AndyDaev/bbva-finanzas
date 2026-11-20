@@ -6,7 +6,8 @@
 
 export const EB_API = "https://api.enablebanking.com"
 export const BANK = { name: "BBVA", country: "ES" }
-const DEFAULT_CONSENT_DAYS = 90
+// Capped by the bank's maximum_consent_validity (BBVA allows 180 days).
+const DEFAULT_CONSENT_DAYS = 180
 
 export function isConfigured(env) {
   return Boolean(env.EB_APP_ID && env.EB_PRIVATE_KEY)
@@ -252,6 +253,37 @@ export function planBankUpsert(existing, incoming) {
     inserts.push(row)
   }
   return { inserts, updates, skipped }
+}
+
+/**
+ * Finds which existing (Excel-imported) account a bank account corresponds to, by how many
+ * of that account's movements in the window share date and amount with the bank feed.
+ * Returns the name when at least half of them (and 3+) match, otherwise null.
+ */
+export function matchExistingAccount(existingRows, bankRows) {
+  const bankKeys = new Map()
+  for (const row of bankRows) {
+    const key = `${row.date}|${Number(row.amount).toFixed(2)}`
+    bankKeys.set(key, (bankKeys.get(key) || 0) + 1)
+  }
+  const byAccount = new Map()
+  for (const row of existingRows) {
+    if (String(row.id).startsWith("eb_")) continue
+    const entry = byAccount.get(row.account) || { total: 0, hits: 0, used: new Map() }
+    entry.total += 1
+    const key = `${row.date}|${Number(row.amount).toFixed(2)}`
+    const used = entry.used.get(key) || 0
+    if (used < (bankKeys.get(key) || 0)) {
+      entry.hits += 1
+      entry.used.set(key, used + 1)
+    }
+    byAccount.set(row.account, entry)
+  }
+  let best = null
+  for (const [name, entry] of byAccount) {
+    if (entry.hits >= 3 && entry.hits / entry.total >= 0.5 && (!best || entry.hits > best.hits)) best = { name, hits: entry.hits }
+  }
+  return best?.name ?? null
 }
 
 export function maskIban(iban) {
