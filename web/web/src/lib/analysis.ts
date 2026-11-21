@@ -125,6 +125,9 @@ export type View = {
   income: number
   expense: number
   toSavings: number
+  /** Gross money put into and taken out of savings (toSavings is the net). */
+  savingsIn: number
+  savingsOut: number
   net: number
   unassigned: number
   savingsRate: number
@@ -233,6 +236,8 @@ type MonthAgg = {
   income: number
   expense: number
   savings: number
+  savingsIn: number
+  savingsOut: number
   bizumIn: number
   bizumOut: number
   purchases: number
@@ -262,6 +267,8 @@ function emptyMonth(): MonthAgg {
     income: 0,
     expense: 0,
     savings: 0,
+    savingsIn: 0,
+    savingsOut: 0,
     bizumIn: 0,
     bizumOut: 0,
     purchases: 0,
@@ -307,6 +314,12 @@ function savingsDelta(tx: Transaction, context: SavingsContext) {
   return context.inView ? 0 : -tx.amount
 }
 
+function addSavings(agg: MonthAgg, delta: number) {
+  agg.savings += delta
+  if (delta > 0) agg.savingsIn += delta
+  else agg.savingsOut -= delta
+}
+
 function aggregate(transactions: Transaction[], tickets: TicketLike[], sortedRules: UserRule[], savings: SavingsContext): Aggregate {
   const months = new Map<string, MonthAgg>()
   const expenses: Transaction[] = []
@@ -327,11 +340,11 @@ function aggregate(transactions: Transaction[], tickets: TicketLike[], sortedRul
     const agg = bucket(monthKey(tx.date))
 
     if (kind === "transfer") {
-      agg.savings += savingsDelta(tx, savings)
+      addSavings(agg, savingsDelta(tx, savings))
       continue
     }
     if (kind === "savings") {
-      agg.savings -= tx.amount
+      addSavings(agg, -tx.amount)
       continue
     }
     if (kind === "bizum") {
@@ -423,6 +436,8 @@ export function buildView(
   const byIncome = new Map<string, number>()
   const byMerchant = new Map<string, MerchantAgg>()
   let toSavings = 0
+  let savingsIn = 0
+  let savingsOut = 0
   let purchaseCount = 0
   let purchaseSpend = 0
   let bizumNet = 0
@@ -436,6 +451,8 @@ export function buildView(
       byMerchant.set(key, current)
     }
     toSavings += agg.savings
+    savingsIn += agg.savingsIn
+    savingsOut += agg.savingsOut
     purchaseCount += agg.purchases
     purchaseSpend += agg.purchaseSpend
     bizumNet += agg.bizumIn - agg.bizumOut
@@ -531,6 +548,8 @@ export function buildView(
     income,
     expense,
     toSavings,
+    savingsIn,
+    savingsOut,
     net,
     unassigned: net - toSavings,
     savingsRate: income > 0 ? net / income : 0,
@@ -962,11 +981,19 @@ export function payrollAccrual(transactions: Transaction[]) {
   const monthEndPayer = payrolls.length >= 2 && lateMonth / payrolls.length >= 0.5
   const shifts: PayrollShift[] = []
   if (!monthEndPayer) return { transactions, shifts }
+  for (const tx of payrolls) {
+    if (Number(tx.date.slice(8, 10)) > 5) continue
+    shifts.push({ paidOn: tx.date, accruedOn: addDays(`${tx.date.slice(0, 7)}-01`, -1), amount: tx.amount })
+  }
+  // On payday money is usually moved to savings too: transfers booked that same day belong
+  // to the same month as the payroll they come from.
+  const shiftedDays = new Map(shifts.map((shift) => [shift.paidOn, shift.accruedOn]))
   const accrued = transactions.map((tx) => {
-    if (tx.amount <= 0 || tx.category !== "Nómina" || Number(tx.date.slice(8, 10)) > 5) return tx
-    const accruedOn = addDays(`${tx.date.slice(0, 7)}-01`, -1)
-    shifts.push({ paidOn: tx.date, accruedOn, amount: tx.amount })
-    return { ...tx, date: accruedOn }
+    const accruedOn = shiftedDays.get(tx.date)
+    if (!accruedOn) return tx
+    const isShiftedPayroll = tx.amount > 0 && tx.category === "Nómina"
+    const isTransfer = tx.category === "Traspaso interno" || tx.category === "Ahorro"
+    return isShiftedPayroll || isTransfer ? { ...tx, date: accruedOn } : tx
   })
   return { transactions: accrued, shifts }
 }

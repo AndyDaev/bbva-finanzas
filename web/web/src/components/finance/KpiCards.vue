@@ -39,7 +39,9 @@ const cards = computed(() => {
       label: "A ahorro",
       value: view.toSavings,
       format: money,
-      note: "Neto que acaba en tu cuenta de ahorro",
+      note: view.savingsIn || view.savingsOut
+        ? `Metiste ${money(view.savingsIn)} · sacaste ${money(view.savingsOut)}`
+        : "Neto que acaba en tu cuenta de ahorro",
       delta: compare ? { delta: compare.toSavings.delta, pct: compare.toSavings.pct, upIsGood: true } : null,
     },
     {

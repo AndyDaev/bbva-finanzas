@@ -408,3 +408,33 @@ describe("payroll month", () => {
     expect(result.balances.points.at(-1)).toMatchObject({ month: "2026-11", total: 3000 })
   })
 })
+
+describe("savings around a shifted payday", () => {
+  const pay = (date: string) => tx(date, 1489.04, "ABONO DE NOMINA POR TRANSFERENCIA // INGRESO POR NÓMINA O PENSIÓN // EMPRESA SL")
+  const toPot = (date: string, amount: number) => [
+    tx(date, -amount, "TRASPASO // TRASPASO A CUENTA // YO", { account: "Principal" }),
+    tx(date, amount, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Hucha" }),
+  ]
+  const fromPot = (date: string, amount: number) => [
+    tx(date, -amount, "TRASPASO // TRASPASO A CUENTA // YO", { account: "Hucha" }),
+    tx(date, amount, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Principal" }),
+  ]
+
+  it("moves payday savings with the payroll and reports gross in/out", () => {
+    const data = [
+      pay("2026-08-31"), ...toPot("2026-08-31", 630),
+      pay("2026-09-30"), ...toPot("2026-09-30", 775), ...fromPot("2026-09-21", 640),
+      ...fromPot("2026-10-30", 115),
+      pay("2026-11-02"), ...toPot("2026-11-02", 800), ...fromPot("2026-11-16", 80),
+    ]
+    const options = { transactions: data, savingsAccounts: ["Hucha"], today: "2026-11-20" }
+    const september = analyze({ ...options, from: "2026-09-01", to: "2026-09-30" })
+    expect(september.view.toSavings).toBeCloseTo(135)
+    expect(september.view.savingsIn).toBeCloseTo(775)
+    expect(september.view.savingsOut).toBeCloseTo(640)
+    const october = analyze({ ...options, from: "2026-10-01", to: "2026-10-31" })
+    expect(october.view.toSavings).toBeCloseTo(685)
+    const november = analyze({ ...options, from: "2026-11-01", to: "2026-11-20" })
+    expect(november.view.toSavings).toBeCloseTo(-80)
+  })
+})
