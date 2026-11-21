@@ -58,8 +58,8 @@ async function saveName() {
     </CardContent>
 
     <CardContent v-else-if="activeBankSession" class="space-y-3 text-sm">
-      <p v-if="daysLeft != null && daysLeft <= 7" class="text-amber-700">⚠ El permiso caduca pronto: pulsa «Renovar permiso» para seguir sincronizando.</p>
-      <div v-for="account in activeBankSession.accounts" :key="account.uid" class="flex flex-wrap items-center justify-between gap-2 border-t pt-3 first:border-0 first:pt-0">
+      <p v-if="daysLeft != null && daysLeft <= 7" class="text-warn">⚠ El permiso caduca pronto: pulsa «Renovar permiso» para seguir sincronizando.</p>
+      <div v-for="account in activeBankSession.accounts" :key="account.uid" class="flex flex-wrap items-center justify-between gap-2 border-t border-dashed border-white/10 pt-3 first:border-0 first:pt-0">
         <div class="min-w-0">
           <p class="font-medium">{{ account.name || "Cuenta BBVA" }} <span class="text-muted-foreground">{{ account.label }}</span></p>
           <p v-if="editing?.uid !== account.uid" class="text-xs text-muted-foreground">

@@ -48,13 +48,15 @@ const stackTooltip = (m: MonthPoint) => {
 }
 
 // ── Savings rate per month ──
-const rateData = computed(() => months.value.filter((m) => m.savingsRate != null))
-const rateY = (m: MonthPoint) => (m.savingsRate ?? 0) * 100
+// A rate over a near-empty income month is meaningless (−80.000 %): skip those, and floor at −100 %.
+const MIN_INCOME = 100
+const rateData = computed(() => months.value.filter((m) => m.savingsRate != null && m.income >= MIN_INCOME))
+const rateY = (m: MonthPoint) => Math.max(-100, (m.savingsRate ?? 0) * 100)
 const rateTooltip = (m: MonthPoint) =>
   `<div class="viz-tip"><strong>${m.label}</strong><div>Tasa de ahorro<b>${Math.round((m.savingsRate ?? 0) * 100)} %</b></div><div>Ingresos<b>${euro.format(m.income)}</b></div><div>Gastos<b>${euro.format(m.expense)}</b></div></div>`
 const avgRate = computed(() => {
   const list = rateData.value
-  return list.length ? list.reduce((sum, m) => sum + (m.savingsRate ?? 0), 0) / list.length : null
+  return list.length ? list.reduce((sum, m) => sum + Math.max(-1, m.savingsRate ?? 0), 0) / list.length : null
 })
 
 // ── Balance per account (≤4 lines, otherwise total only) ──
@@ -86,9 +88,9 @@ const table = computed(() => {
   })
 })
 function cellTone(value: number, average: number) {
-  if (average < 20 || months.value.length < 2) return ""
-  if (value > average * 1.3) return "bg-rose-50 text-rose-800"
-  if (value < average * 0.7) return "bg-emerald-50 text-emerald-800"
+  if (value <= 0 || average < 20 || months.value.length < 2) return ""
+  if (value > average * 1.3) return "bg-bad/15 text-bad"
+  if (value < average * 0.7) return "bg-good/15 text-good"
   return ""
 }
 </script>
@@ -200,9 +202,9 @@ function cellTone(value: number, average: number) {
     <CardHeader>
       <CardTitle>Categorías mes a mes</CardTitle>
       <CardDescription>
-        <span class="rounded bg-rose-50 px-1 text-rose-800">▲ +30 % sobre su media</span>
+        <span class="rounded bg-bad/15 px-1 text-bad">▲ +30 % sobre su media</span>
         ·
-        <span class="rounded bg-emerald-50 px-1 text-emerald-800">▼ −30 %</span>
+        <span class="rounded bg-good/15 px-1 text-good">▼ −30 %</span>
         · toca una categoría para ver sus movimientos
       </CardDescription>
     </CardHeader>
@@ -216,7 +218,7 @@ function cellTone(value: number, average: number) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in table" :key="row.name" class="border-b last:border-0">
+          <tr v-for="row in table" :key="row.name" class="border-b border-dashed border-white/10 last:border-0 transition-colors hover:bg-white/[0.025]">
             <td class="py-1.5 pr-3">
               <button type="button" class="flex items-center gap-2 text-left hover:underline" @click="openCategory(row.name)">
                 <span class="size-2.5 shrink-0 rounded-sm" :style="{ background: categoryColors.color(row.name) }" />

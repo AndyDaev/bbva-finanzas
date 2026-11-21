@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from "vue"
 import { Button } from "@/components/ui/button"
 import { useFinance } from "@/lib/useFinance"
+import RevealText from "./RevealText.vue"
 
 const { busy, scanBusy, offline, updatedLabel, importFiles, scanTicket, copyChatgpt, doLogout, activeBankSession, bankBusy, syncBank } = useFinance()
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -39,32 +40,44 @@ onBeforeUnmount(() => document.removeEventListener("click", closeOnOutside))
 </script>
 
 <template>
-  <header class="sticky top-0 z-20 -mx-4 border-b bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:static md:mx-0 md:border-0 md:bg-transparent md:px-0 md:py-0 md:backdrop-blur-none">
-    <div class="flex flex-wrap items-end justify-between gap-3">
-      <div class="min-w-0">
-        <p class="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">Finanzas personales</p>
-        <h1 class="text-2xl font-semibold tracking-tight md:text-3xl">Compras e ingresos</h1>
-        <p class="mt-1 text-sm text-muted-foreground">
-          <span :class="offline ? 'text-amber-700' : ''">{{ offline ? "Sin conexión (copia local)" : "Datos en la nube" }}</span>
-          <span v-if="updatedLabel"> · {{ updatedLabel }}</span>
-        </p>
+  <header class="space-y-8">
+    <!-- Top bar: glass, like the site's nav -->
+    <div class="glass sticky top-0 z-20 -mx-4 flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3 md:-mx-6 md:px-6">
+      <div class="flex min-w-0 items-center gap-2.5">
+        <span class="live-dot shrink-0" :class="offline ? 'opacity-40 [animation:none]' : ''" aria-hidden="true" />
+        <span class="mono-label truncate !text-foreground">Andy Corzo</span>
+        <span class="mono-label hidden truncate sm:inline">/ Finanzas</span>
       </div>
-      <div ref="menuRoot" class="relative flex w-full flex-wrap gap-2 sm:w-auto">
-        <Button class="min-h-11 flex-1 sm:flex-none" :disabled="busy" @click="openImport()">
-          {{ busy ? "Importando…" : "Importar extracto" }}
+      <div ref="menuRoot" class="relative flex items-center gap-2">
+        <Button v-if="activeBankSession" size="sm" class="min-h-9" :disabled="bankBusy" @click="syncBank()">
+          {{ bankBusy ? "Sincronizando…" : "Sincronizar" }}
+        </Button>
+        <Button size="sm" class="min-h-9" :variant="activeBankSession ? 'outline' : 'default'" :disabled="busy" @click="openImport()">
+          {{ busy ? "Importando…" : "Importar" }}
         </Button>
         <input ref="fileInput" class="hidden" type="file" accept=".csv,.xlsx,.xls" multiple @change="onFiles">
-        <Button class="min-h-11 flex-1 sm:flex-none" variant="outline" :disabled="scanBusy" @click="ticketInput?.click()">
-          {{ scanBusy ? "Leyendo…" : "Ticket / cámara" }}
-        </Button>
         <input ref="ticketInput" class="hidden" type="file" accept="image/*" capture="environment" @change="onTicket">
-        <Button class="min-h-11" variant="ghost" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">Más</Button>
-        <div v-if="menuOpen" class="absolute right-0 top-full z-30 mt-1 min-w-[200px] rounded-xl border bg-card p-1 shadow-md">
-          <Button v-if="activeBankSession" variant="ghost" class="w-full justify-start" :disabled="bankBusy" @click="syncBank(); menuOpen = false">Sincronizar banco</Button>
-          <Button variant="ghost" class="w-full justify-start" @click="copyChatgpt(); menuOpen = false">Copiar para ChatGPT</Button>
-          <Button variant="ghost" class="w-full justify-start" @click="doLogout(); menuOpen = false">Salir</Button>
-        </div>
+        <Button size="sm" class="min-h-9" variant="outline" :aria-expanded="menuOpen" aria-label="Más opciones" @click="menuOpen = !menuOpen">Más</Button>
+        <Transition name="tab">
+          <div v-if="menuOpen" class="glass absolute right-0 top-full z-30 mt-2 min-w-[220px] rounded-2xl border border-white/10 p-1.5 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.9)]">
+            <Button variant="ghost" class="w-full justify-start" :disabled="scanBusy" @click="ticketInput?.click(); menuOpen = false">{{ scanBusy ? "Leyendo ticket…" : "Escanear ticket" }}</Button>
+            <Button variant="ghost" class="w-full justify-start" @click="copyChatgpt(); menuOpen = false">Copiar para ChatGPT</Button>
+            <Button variant="ghost" class="w-full justify-start" @click="doLogout(); menuOpen = false">Salir</Button>
+          </div>
+        </Transition>
       </div>
+    </div>
+
+    <!-- Hero: uppercase display title revealed line by line -->
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <h1 class="display text-gradient text-[clamp(2.75rem,9vw,6rem)]">
+        <RevealText :text="'Tus\nfinanzas'" :delay="350" />
+      </h1>
+      <p class="mono-label pb-2 text-right leading-relaxed">
+        <span :class="offline ? 'text-warn' : ''">{{ offline ? "Sin conexión · copia local" : "Sincronizado en la nube" }}</span>
+        <br v-if="updatedLabel">
+        <span v-if="updatedLabel">{{ updatedLabel }}</span>
+      </p>
     </div>
   </header>
 </template>

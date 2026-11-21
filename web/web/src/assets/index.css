@@ -1,4 +1,5 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+/* Inter, self-hosted (the CSP only allows fonts from this origin). */
+@import "@fontsource-variable/inter";
 
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -7,7 +8,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: "Inter", system-ui, sans-serif;
+  --font-sans: "Inter Variable", "Inter", system-ui, sans-serif;
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -40,6 +41,12 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  /* Brand and status (status always ships with an icon/sign, never colour alone). */
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
+  --color-warn: var(--warn);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -47,77 +54,172 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Dark theme taken from andycorzo.com: near-black page, graphite surfaces, white type, orange accent. */
 :root {
-  --background: oklch(0.985 0.004 95);
-  --foreground: oklch(0.18 0.01 95);
-  --card: oklch(0.995 0.002 95);
-  --card-foreground: oklch(0.18 0.01 95);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.18 0.01 95);
-  --primary: oklch(0.18 0.01 95);
-  --primary-foreground: oklch(0.98 0.004 95);
-  --secondary: oklch(0.95 0.006 95);
-  --secondary-foreground: oklch(0.22 0.01 95);
-  --muted: oklch(0.95 0.006 95);
-  --muted-foreground: oklch(0.48 0.01 95);
-  --accent: oklch(0.94 0.008 95);
-  --accent-foreground: oklch(0.18 0.01 95);
-  --destructive: oklch(0.55 0.2 25);
-  --border: oklch(0.9 0.008 95);
-  --input: oklch(0.9 0.008 95);
-  --ring: oklch(0.35 0.01 95);
-  --chart-1: oklch(0.35 0.02 95);
-  --chart-2: oklch(0.5 0.02 95);
-  --chart-3: oklch(0.65 0.015 95);
-  --chart-4: oklch(0.75 0.01 95);
-  --chart-5: oklch(0.82 0.008 95);
-  /* Categorical series (validated order: identity follows the category, never its rank). */
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --series-5: #e87ba4;
-  --series-6: #008300;
-  --series-other: #8a8984;
-  --series-income: #1baf7a;
-  --series-expense: #eb6834;
-  --series-savings: #2a78d6;
+  color-scheme: dark;
+  --background: #020202;
+  --foreground: #f5f5f4;
+  --card: #0d0d0d;
+  --card-foreground: #f5f5f4;
+  --popover: #121212;
+  --popover-foreground: #f5f5f4;
+  --primary: #ffffff;
+  --primary-foreground: #0a0a0a;
+  --secondary: #1f1f1f;
+  --secondary-foreground: #f5f5f4;
+  --muted: #1a1a1a;
+  --muted-foreground: #9b9b96;
+  --accent: #1f1f1f;
+  --accent-foreground: #f5f5f4;
+  --destructive: #f2564a;
+  --border: #232323;
+  --input: #2a2a2a;
+  --ring: #ff4400;
+  --brand: #ff4400;
+  --brand-soft: #ffe5d0;
+  --good: #4fc27a;
+  --bad: #ff6b5e;
+  --warn: #f5b041;
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  /* Categorical series, validated for the #0f0f0f surface (identity follows the category). */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #0ca30c;
+  --series-other: #6e6e69;
+  --series-income: #199e70;
+  --series-expense: #d95926;
+  --series-savings: #3987e5;
   --radius: 0.75rem;
-  --sidebar: oklch(0.98 0.004 95);
-  --sidebar-foreground: oklch(0.18 0.01 95);
-  --sidebar-primary: oklch(0.18 0.01 95);
-  --sidebar-primary-foreground: oklch(0.98 0.004 95);
-  --sidebar-accent: oklch(0.95 0.006 95);
-  --sidebar-accent-foreground: oklch(0.18 0.01 95);
-  --sidebar-border: oklch(0.9 0.008 95);
-  --sidebar-ring: oklch(0.35 0.01 95);
+  --sidebar: #0d0d0d;
+  --sidebar-foreground: #f5f5f4;
+  --sidebar-primary: #ffffff;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #1f1f1f;
+  --sidebar-accent-foreground: #f5f5f4;
+  --sidebar-border: #232323;
+  --sidebar-ring: #ff4400;
+
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
   body {
-    @apply bg-background text-foreground antialiased;
-    @apply font-sans;
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    min-height: 100dvh;
+    /* A faint orange glow at the top, like the site's hero, over the near-black page. */
+    background-image:
+      radial-gradient(60rem 28rem at 50% -12rem, color-mix(in srgb, var(--brand) 9%, transparent), transparent 70%),
+      radial-gradient(40rem 20rem at 100% 0%, color-mix(in srgb, var(--brand-soft) 4%, transparent), transparent 70%);
+    background-repeat: no-repeat;
+    background-attachment: fixed;
   }
-  h1, h2, h3 {
-    letter-spacing: -0.03em;
+  h1, h2, h3, [data-slot="card-title"] {
+    letter-spacing: -0.02em;
   }
+  ::selection {
+    background: color-mix(in srgb, var(--brand) 35%, transparent);
+    color: #fff;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.8);
+  }
+  select {
+    color-scheme: dark;
+  }
+}
+
+/* Unovis charts on the dark surface. Declared on body: Unovis injects its own defaults on :root at runtime. */
+body {
+  --vis-font-family: var(--font-sans);
+  --vis-axis-tick-label-color: #8a8a85;
+  --vis-axis-tick-label-font-size: 11px;
+  --vis-axis-grid-color: #1c1c1c;
+  --vis-axis-domain-color: transparent;
+  --vis-tooltip-background-color: #121212;
+  --vis-tooltip-border-color: #2a2a2a;
+  --vis-tooltip-text-color: #f5f5f4;
+  --vis-tooltip-shadow-color: rgba(0, 0, 0, 0.6);
+  --vis-tooltip-padding: 10px 12px;
+  --vis-crosshair-line-stroke-color: #3a3a3a;
+  --vis-crosshair-circle-stroke-color: #020202;
+
+  --vis-axis-tick-color: transparent;
+  --vis-axis-label-color: #8a8a85;
+}
+
+/* ───────────── Components ───────────── */
+
+/* Small uppercase label used above sections (site style: tracking .05em). */
+.eyebrow {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* Title with the site's white → peach gradient. */
+.text-gradient,
+.text-gradient .line-mask > span {
+  background: linear-gradient(90deg, #fff 55%, var(--brand-soft));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+/* With masked lines, each animated line paints its own gradient (a parent clip can't reach transformed children). */
+.text-gradient:has(.line-mask) {
+  background: none;
+  color: #fff;
+}
+
+/* Cards: hairline border, subtle inner highlight, lift on hover for interactive ones. */
+[data-slot="card"] {
+  background: linear-gradient(180deg, #111111 0%, var(--card) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.5);
+  transition: border-color 0.3s var(--ease-out-expo), transform 0.4s var(--ease-out-expo), box-shadow 0.4s var(--ease-out-expo);
+}
+.card-hover:hover [data-slot="card"],
+[data-slot="card"].card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 12px 32px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 68, 0, 0.18);
+}
+
+/* Glass header like the site's nav (blur 10px). */
+.glass {
+  background: color-mix(in srgb, var(--background) 72%, transparent);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
 }
 
 /* Chart tooltips (Unovis crosshair templates). Text uses text tokens; the swatch carries identity. */
 .viz-tip {
   display: grid;
-  gap: 2px;
-  min-width: 160px;
+  gap: 3px;
+  min-width: 170px;
   font-size: 12px;
   color: var(--foreground);
 }
 .viz-tip strong {
-  margin-bottom: 2px;
+  margin-bottom: 3px;
+  font-weight: 600;
 }
 .viz-tip div {
   display: flex;
@@ -127,7 +229,7 @@
 }
 .viz-tip div b {
   margin-left: auto;
-  padding-left: 12px;
+  padding-left: 14px;
   color: var(--foreground);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -137,4 +239,176 @@
   height: 8px;
   border-radius: 2px;
   flex-shrink: 0;
+}
+
+/* ───────────── Motion (site easing: cubic-bezier(.16,1,.3,1)) ───────────── */
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.99); filter: blur(4px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes grow-x {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 55%, transparent); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
+
+/* Staggered entrance: children of .stagger rise in one after another. */
+.stagger > * {
+  animation: rise-in 0.7s var(--ease-out-expo) both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 60ms; }
+.stagger > *:nth-child(3) { animation-delay: 120ms; }
+.stagger > *:nth-child(4) { animation-delay: 180ms; }
+.stagger > *:nth-child(5) { animation-delay: 240ms; }
+.stagger > *:nth-child(6) { animation-delay: 300ms; }
+.stagger > *:nth-child(7) { animation-delay: 360ms; }
+.stagger > *:nth-child(8) { animation-delay: 420ms; }
+.stagger > *:nth-child(n + 9) { animation-delay: 480ms; }
+
+.rise-in { animation: rise-in 0.7s var(--ease-out-expo) both; }
+
+/* Bars grow from the left on first paint. */
+.bar-grow {
+  transform-origin: left center;
+  animation: grow-x 0.9s var(--ease-out-expo) both;
+}
+
+/* Loading skeleton. */
+.skeleton {
+  background: linear-gradient(90deg, #141414 25%, #1d1d1d 50%, #141414 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 0.5rem;
+}
+
+/* Live dot (sync status). */
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--brand);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Tab switch transition. */
+.tab-enter-active { transition: opacity 0.35s var(--ease-out-expo), transform 0.45s var(--ease-out-expo); }
+.tab-leave-active { transition: opacity 0.15s ease; }
+.tab-enter-from { opacity: 0; transform: translateY(8px); }
+.tab-leave-to { opacity: 0; }
+
+/* Toast. */
+.toast-enter-active { transition: opacity 0.35s var(--ease-out-expo), transform 0.5s var(--ease-out-expo); }
+.toast-leave-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+.toast-enter-from { opacity: 0; transform: translate(-50%, 16px) scale(0.98); }
+.toast-leave-to { opacity: 0; transform: translate(-50%, 8px); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ───────────── Signature elements from andycorzo.com ───────────── */
+
+/* Uppercase mono label (site: p.primary.sm). */
+.mono-label {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* Display heading: uppercase Inter 600, tight tracking. */
+.display {
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+  line-height: 0.95;
+}
+
+/* Translucent pill (site nav links): white 12.5% + blur, brighter on hover. */
+.pill {
+  border-radius: 2em;
+  background-color: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background-color 0.3s var(--ease-out-expo), color 0.3s var(--ease-out-expo), border-color 0.3s var(--ease-out-expo);
+}
+.pill:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+.pill[aria-selected="true"],
+.pill[aria-pressed="true"] {
+  background-color: #fff;
+  color: #0a0a0a;
+  border-color: #fff;
+}
+
+/* Dashed separators (site footer/nav rows). */
+.dashed-list > * + * {
+  border-top: 1px dashed #2a2a2a;
+}
+
+/* Line-mask reveal (site AnimatedH1: lines slide up from behind a mask, power4.out). */
+.line-mask {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  padding-bottom: 0.06em;
+  margin-bottom: -0.06em;
+}
+.line-mask > span {
+  display: inline-block;
+  animation: line-up 1s cubic-bezier(0.23, 1, 0.32, 1) both;
+  animation-delay: var(--delay, 0ms);
+  will-change: transform;
+}
+@keyframes line-up {
+  from { transform: translateY(105%); }
+  to { transform: translateY(0); }
+}
+
+/* Block curtain (site page Transition: a grid of blocks folding away with random delays). */
+.curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+.curtain-row {
+  flex: 1;
+  display: flex;
+}
+.curtain-block {
+  flex: 1;
+  margin: -0.25px;
+  background: var(--background);
+  transform-origin: top;
+  animation: fold-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--delay, 0ms);
+}
+@keyframes fold-up {
+  from { transform: scaleY(1); }
+  to { transform: scaleY(0); }
 }

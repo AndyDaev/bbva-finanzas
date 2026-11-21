@@ -51,7 +51,8 @@ describe("App renders every tab with data", () => {
   for (const tab of ["resumen", "comercios", "movimientos"] as Tab[]) {
     it(tab, async () => {
       const html = await renderTab(tab)
-      expect(html).toContain("Compras e ingresos")
+      expect(html).toContain("Andy Corzo")
+      expect(html).toContain("finanzas")
       expect(html).not.toContain("Importa tu primer extracto")
     })
   }

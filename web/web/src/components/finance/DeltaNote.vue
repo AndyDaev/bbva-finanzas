@@ -28,7 +28,7 @@ const text = computed(() => {
 <template>
   <span
     class="inline-flex items-center gap-1 tabular-nums"
-    :class="tone === 'good' ? 'text-emerald-700' : tone === 'bad' ? 'text-rose-700' : 'text-muted-foreground'"
+    :class="tone === 'good' ? 'text-good' : tone === 'bad' ? 'text-bad' : 'text-muted-foreground'"
   >
     <span aria-hidden="true">{{ delta > 0 ? "▲" : delta < 0 ? "▼" : "•" }}</span>
     {{ text }}

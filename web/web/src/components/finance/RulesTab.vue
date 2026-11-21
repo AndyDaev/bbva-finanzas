@@ -77,7 +77,7 @@ const directionLabel = (d?: string | null) => (d === "out" ? "gastos" : d === "i
       </div>
       <p v-if="regexError" class="text-sm text-destructive" role="alert">La expresión regular no es válida.</p>
       <p v-else-if="form.pattern.trim()" class="text-sm text-muted-foreground">
-        Coincide con {{ preview.length }} movimientos<template v-if="preview.length">, p. ej. «{{ preview[0]!.text.slice(0, 60) }}»</template>.
+        Coincide con {{ preview.length }} movimientos<template v-if="preview.length">, p. ej. «{{ preview[0]!.text.replace(/\b\d{4}\d{6,11}(\d{4})\b/g, "•••• $1").slice(0, 60) }}»</template>.
       </p>
       <div class="flex gap-2">
         <Button class="min-h-10" :disabled="!form.pattern.trim() || Boolean(regexError)" @click="submit">{{ form.id ? "Guardar cambios" : "Crear regla" }}</Button>

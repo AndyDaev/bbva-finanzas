@@ -127,16 +127,16 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
       <CardContent>
         <ul class="space-y-1">
           <li v-for="item in categoryRows" :key="item.name">
-            <button type="button" class="grid w-full grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-3 rounded-md px-1 py-1.5 text-left text-sm hover:bg-muted/60 sm:grid-cols-[minmax(0,11rem)_1fr_auto_6.5rem]" @click="openCategory(item.name)">
+            <button type="button" class="grid w-full grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-3 rounded-md px-1 py-1.5 text-left text-sm hover:bg-muted/60 sm:grid-cols-[minmax(0,11rem)_1fr_auto_10rem]" @click="openCategory(item.name)">
               <span class="flex min-w-0 items-center gap-2">
                 <span class="size-2.5 shrink-0 rounded-sm" :style="{ background: categoryColors.color(item.name) }" />
                 <span class="truncate">{{ item.name }}</span>
               </span>
               <span class="h-2 overflow-hidden rounded-full bg-muted">
-                <span class="block h-full rounded-full" :style="{ width: `${Math.max(2, item.width)}%`, background: categoryColors.color(item.name) }" />
+                <span class="bar-grow block h-full rounded-full" :style="{ width: `${Math.max(2, item.width)}%`, background: categoryColors.color(item.name) }" />
               </span>
               <span class="text-right tabular-nums">{{ euroWhole.format(item.amount) }} <span class="text-xs text-muted-foreground">{{ Math.round(item.share * 100) }} %</span></span>
-              <span class="hidden text-right text-xs sm:block">
+              <span class="hidden whitespace-nowrap text-right text-xs sm:block">
                 <DeltaNote v-if="item.hasPrevious" :delta="item.delta" :pct="item.pct" />
               </span>
             </button>
@@ -152,7 +152,7 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         <CardDescription>Comercios y destinatarios del periodo</CardDescription>
       </CardHeader>
       <CardContent>
-        <ul class="divide-y">
+        <ul class="divide-y divide-dashed divide-white/10">
           <li v-for="item in view.merchants.slice(0, 8)" :key="item.name">
             <button type="button" class="flex w-full items-center justify-between gap-3 py-2 text-left text-sm hover:bg-muted/40" @click="openMerchant(item.name)">
               <span class="min-w-0">
@@ -178,11 +178,11 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-1">
-        <div v-for="item in analysis.recurring" :key="item.key" class="flex items-start justify-between gap-3 border-t py-2 first:border-0">
+        <div v-for="item in analysis.recurring" :key="item.key" class="flex items-start justify-between gap-3 border-t border-dashed border-white/10 py-2 first:border-0">
           <div class="min-w-0">
             <p class="flex flex-wrap items-center gap-2 font-medium">
               <span class="truncate">{{ item.name }}</span>
-              <Badge v-if="item.status === 'increase'" variant="outline" class="border-rose-300 text-rose-700">▲ Sube {{ euro.format(item.amount - item.previousAmount) }}</Badge>
+              <Badge v-if="item.status === 'increase'" variant="outline" class="border-bad/40 text-bad">▲ Sube {{ euro.format(item.amount - item.previousAmount) }}</Badge>
               <Badge v-else-if="item.status === 'new'" variant="outline">Nueva</Badge>
             </p>
             <p class="text-xs text-muted-foreground">
@@ -244,12 +244,12 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
           <div class="h-2 overflow-hidden rounded-full bg-muted">
             <div
               class="h-full rounded-full transition-all"
-              :class="item.state === 'over' ? 'bg-destructive' : item.state === 'warn' ? 'bg-amber-500' : 'bg-foreground'"
+              :class="item.state === 'over' ? 'bg-destructive' : item.state === 'warn' ? 'bg-warn' : 'bg-foreground'"
               :style="{ width: `${Math.min(100, Math.max(4, item.ratio * 100))}%` }"
             />
           </div>
           <p v-if="item.state === 'over'" class="text-xs text-destructive">⚠ Te pasas {{ euro.format(Math.abs(item.remaining)) }}</p>
-          <p v-else-if="item.paceNote" class="text-xs text-amber-700">⚠ {{ item.paceNote }}</p>
+          <p v-else-if="item.paceNote" class="text-xs text-warn">⚠ {{ item.paceNote }}</p>
         </div>
       </div>
       <p v-else-if="!editingBudgets" class="text-sm text-muted-foreground">Sin límites. Pulsa «Editar límites» y pon, por ejemplo, Restauración 150 €.</p>
@@ -265,14 +265,14 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         <CardDescription>
           <template v-if="analysis.cushion">
             {{ euroWhole.format(analysis.cushion.balance) }} en total · colchón de
-            <strong :class="analysis.cushion.months < 3 ? 'text-amber-700' : ''">{{ analysis.cushion.months.toFixed(1) }} meses</strong>
+            <strong :class="analysis.cushion.months < 3 ? 'text-warn' : ''">{{ analysis.cushion.months.toFixed(1) }} meses</strong>
             de gasto ({{ euroWhole.format(analysis.cushion.avgExpense) }}/mes)
           </template>
           <template v-else>Saldo según el último movimiento</template>
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div v-for="item in accounts" :key="item.name" class="flex items-center justify-between gap-3 border-t py-2 first:border-0">
+        <div v-for="item in accounts" :key="item.name" class="flex items-center justify-between gap-3 border-t border-dashed border-white/10 py-2 first:border-0">
           <div class="min-w-0">
             <p class="flex items-center gap-2 truncate font-medium">
               {{ item.name }}
@@ -297,7 +297,7 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
           v-for="item in view.biggest"
           :key="`${item.date}-${item.name}-${item.amount}`"
           type="button"
-          class="flex min-h-11 w-full items-start justify-between gap-3 border-t pt-2 text-left first:border-0 first:pt-0"
+          class="flex min-h-11 w-full items-start justify-between gap-3 border-t border-dashed border-white/10 pt-2 text-left first:border-0 first:pt-0"
           @click="openMerchant(item.name)"
         >
           <div class="min-w-0">
