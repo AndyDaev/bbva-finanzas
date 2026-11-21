@@ -52,7 +52,8 @@ onBeforeUnmount(() => document.removeEventListener("click", closeOnOutside))
         <Button v-if="activeBankSession" size="sm" class="min-h-9" :disabled="bankBusy" @click="syncBank()">
           {{ bankBusy ? "Sincronizando…" : "Sincronizar" }}
         </Button>
-        <Button size="sm" class="min-h-9" :variant="activeBankSession ? 'outline' : 'default'" :disabled="busy" @click="openImport()">
+        <!-- With BBVA connected the bank is the source of truth: Excel import moves to "Más". -->
+        <Button v-if="!activeBankSession" size="sm" class="min-h-9" :disabled="busy" @click="openImport()">
           {{ busy ? "Importando…" : "Importar" }}
         </Button>
         <input ref="fileInput" class="hidden" type="file" accept=".csv,.xlsx,.xls" multiple @change="onFiles">
@@ -60,6 +61,7 @@ onBeforeUnmount(() => document.removeEventListener("click", closeOnOutside))
         <Button size="sm" class="min-h-9" variant="outline" :aria-expanded="menuOpen" aria-label="Más opciones" @click="menuOpen = !menuOpen">Más</Button>
         <Transition name="tab">
           <div v-if="menuOpen" class="glass absolute right-0 top-full z-30 mt-2 min-w-[220px] rounded-2xl border border-white/10 p-1.5 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.9)]">
+            <Button v-if="activeBankSession" variant="ghost" class="w-full justify-start" :disabled="busy" @click="openImport(); menuOpen = false">Importar Excel</Button>
             <Button variant="ghost" class="w-full justify-start" :disabled="scanBusy" @click="ticketInput?.click(); menuOpen = false">{{ scanBusy ? "Leyendo ticket…" : "Escanear ticket" }}</Button>
             <Button variant="ghost" class="w-full justify-start" @click="copyChatgpt(); menuOpen = false">Copiar para ChatGPT</Button>
             <Button variant="ghost" class="w-full justify-start" @click="doLogout(); menuOpen = false">Salir</Button>

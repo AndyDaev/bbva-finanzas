@@ -13,6 +13,25 @@ const hideInternal = ref(true)
 const visible = computed(() => (hideInternal.value ? filtered.value.filter((tx) => tx.category !== "Traspaso interno") : filtered.value))
 const internalCount = computed(() => filtered.value.length - visible.value.length)
 const shown = computed(() => visible.value.slice(0, limit.value))
+const shownByDay = computed(() => {
+  const groups: Array<{ date: string, items: typeof shown.value }> = []
+  for (const tx of shown.value) {
+    const last = groups[groups.length - 1]
+    if (last && last.date === tx.date) last.items.push(tx)
+    else groups.push({ date: tx.date, items: [tx] })
+  }
+  return groups
+})
+const dayFormat = new Intl.DateTimeFormat("es-ES", { weekday: "short", day: "numeric", month: "short" })
+function dayLabel(date: string) {
+  const today = new Date()
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  if (date === iso(today)) return "Hoy"
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (date === iso(yesterday)) return "Ayer"
+  return dayFormat.format(new Date(`${date}T12:00:00`)).replace(/\./g, "")
+}
 const totals = computed(() => {
   let income = 0
   let expense = 0
@@ -123,24 +142,35 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
         </table>
       </div>
 
-      <div class="grid gap-3 md:hidden">
-        <div v-for="tx in shown" :key="tx.id || `${tx.date}-${tx.text}-${tx.amount}-${tx.account}`" class="space-y-2 border-t border-dashed border-white/10 pt-3 first:border-0 first:pt-0">
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-              <p class="truncate font-medium" :title="maskCard(tx.text)">{{ describe(tx.text).name }}</p>
-              <p v-if="describe(tx.text).detail" class="truncate text-xs text-muted-foreground">{{ describe(tx.text).detail }}</p>
-              <p class="text-xs text-muted-foreground">{{ formatDay(tx.date) }} · {{ tx.account }}</p>
-            </div>
-            <strong class="shrink-0 tabular-nums" :class="tx.amount > 0 ? 'text-good' : ''">{{ euro.format(tx.amount) }}</strong>
-          </div>
-          <div class="flex items-center gap-2">
-            <select class="h-11 flex-1 rounded-md border bg-background px-2 text-sm" :value="tx.category" :aria-label="`Categoría de ${describe(tx.text).name}`" @change="onCategory(tx, $event)">
-              <option v-for="name in CATEGORY_OPTIONS" :key="name" :value="name">{{ name }}</option>
-              <option v-if="!CATEGORY_OPTIONS.includes(tx.category)" :value="tx.category">{{ tx.category }}</option>
-            </select>
-            <button v-if="tx.categoryLocked" type="button" class="min-h-11 rounded px-2 text-xs text-muted-foreground" @click="unlockCategory(tx)">✎ manual</button>
-          </div>
-        </div>
+      <!-- Mobile: compact rows grouped by day; the amount always visible, category as a small pill. -->
+      <div class="md:hidden">
+        <section v-for="group in shownByDay" :key="group.date" class="min-w-0">
+          <p class="mono-label pt-3 pb-1">{{ dayLabel(group.date) }}</p>
+          <ul class="divide-y divide-dashed divide-white/10">
+            <li v-for="tx in group.items" :key="tx.id || `${tx.date}-${tx.text}-${tx.amount}-${tx.account}`" class="min-w-0 py-2.5">
+              <div class="flex min-w-0 items-baseline justify-between gap-3">
+                <p class="min-w-0 flex-1 truncate font-medium" :title="maskCard(tx.text)">{{ describe(tx.text).name }}</p>
+                <strong class="shrink-0 tabular-nums" :class="tx.amount > 0 ? 'text-good' : ''">{{ euro.format(tx.amount) }}</strong>
+              </div>
+              <div class="mt-1 flex min-w-0 items-center gap-2">
+                <label class="relative shrink-0">
+                  <span class="sr-only">Categoría de {{ describe(tx.text).name }}</span>
+                  <select
+                    class="pill h-7 max-w-[11rem] appearance-none truncate rounded-full pr-6 pl-2.5 text-xs"
+                    :value="tx.category"
+                    @change="onCategory(tx, $event)"
+                  >
+                    <option v-for="name in CATEGORY_OPTIONS" :key="name" :value="name">{{ name }}</option>
+                    <option v-if="!CATEGORY_OPTIONS.includes(tx.category)" :value="tx.category">{{ tx.category }}</option>
+                  </select>
+                  <span class="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-[0.6rem] text-muted-foreground" aria-hidden="true">▼</span>
+                </label>
+                <button v-if="tx.categoryLocked" type="button" class="shrink-0 text-[0.7rem] text-muted-foreground" title="Volver a la categoría automática" @click="unlockCategory(tx)">✎ manual</button>
+                <span v-if="describe(tx.text).detail" class="min-w-0 truncate text-xs text-muted-foreground">{{ describe(tx.text).detail }}</span>
+              </div>
+            </li>
+          </ul>
+        </section>
       </div>
 
       <p v-if="!shown.length" class="py-4 text-sm text-muted-foreground">No hay movimientos con estos filtros.</p>

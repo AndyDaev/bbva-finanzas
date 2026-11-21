@@ -63,7 +63,7 @@ describe("App renders every tab with data", () => {
     expect(html).toContain("Netflix")
     expect(html).toContain("Ritmo de gasto")
     expect(html).toContain("En qué gastas")
-    expect(html).toContain("colchón")
+    expect(html.toLowerCase()).toContain("colchón")
   })
 
   it("trends, tickets and rules tabs render on their own", async () => {

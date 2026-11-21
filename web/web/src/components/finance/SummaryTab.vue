@@ -269,9 +269,9 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         <CardTitle>Cuentas</CardTitle>
         <CardDescription>
           <template v-if="analysis.cushion">
-            {{ euroWhole.format(analysis.cushion.balance) }} en total · colchón de
+            Colchón: tus {{ euroWhole.format(analysis.cushion.balance) }} ahorrados cubren
             <strong :class="analysis.cushion.months < 3 ? 'text-warn' : ''">{{ analysis.cushion.months.toFixed(1) }} meses</strong>
-            de gasto ({{ euroWhole.format(analysis.cushion.avgExpense) }}/mes)
+            de tu gasto actual ({{ euroWhole.format(analysis.cushion.avgExpense) }}/mes, media de los últimos 3 meses)
           </template>
           <template v-else>Saldo según el último movimiento</template>
         </CardDescription>

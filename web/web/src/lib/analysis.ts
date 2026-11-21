@@ -1111,12 +1111,16 @@ export function analyze(input: {
   const lastPeriod = periods[periods.length - 1]
   if (lastPeriod && input.to >= todayIso && latestBooked > lastPeriod.to) lastPeriod.to = latestBooked
 
-  const accountBalances = accountsFromTransactions(input.transactions).filter((item) => item.balance != null)
-  const lastSix = completeMonths(all.months, today).slice(-6)
-  const avgMonthly = lastSix.length ? sum(lastSix.map(([, agg]) => agg.expense)) / lastSix.length : 0
-  const totalBalance = sum(accountBalances.map((item) => item.balance!))
-  const cushion = accountBalances.length && avgMonthly > 0
-    ? { balance: totalBalance, avgExpense: avgMonthly, months: totalBalance / avgMonthly }
+  // Cushion = what is saved (savings accounts; all accounts if there is none) ÷ how much you
+  // spend now (average of the last 3 complete months/cycles), from the latest bank balances.
+  const withBalance = accountsFromTransactions(input.transactions).filter((item) => item.balance != null)
+  const savedBalances = withBalance.filter((item) => savingsAccounts.includes(item.name))
+  const cushionAccounts = savedBalances.length ? savedBalances : withBalance
+  const recent = completeMonths(all.months, today).slice(-3)
+  const avgMonthly = recent.length ? sum(recent.map(([, agg]) => agg.expense)) / recent.length : 0
+  const cushionBalance = sum(cushionAccounts.map((item) => item.balance!))
+  const cushion = cushionAccounts.length && avgMonthly > 0
+    ? { balance: cushionBalance, avgExpense: avgMonthly, months: cushionBalance / avgMonthly }
     : null
 
   const trendBadges: string[] = []
@@ -1173,7 +1177,7 @@ function buildInsights(
   if (forecast && forecast.daysElapsed < forecast.daysInMonth) {
     insights.push(`Previsión de ${forecast.label}: ~${euro.format(forecast.projected)} de gasto.`)
   }
-  if (cushion) insights.push(`Tu saldo cubre ${cushion.months.toFixed(1)} meses de gasto medio.`)
+  if (cushion) insights.push(`Tus ahorros cubren ${cushion.months.toFixed(1)} meses de tu gasto actual.`)
   if (Math.abs(view.bizumNet) >= 1) {
     insights.push(`Bizum neto: ${view.bizumNet >= 0 ? "+" : "−"}${euro.format(Math.abs(view.bizumNet))} (recibidos menos enviados).`)
   }
