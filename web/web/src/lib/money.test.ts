@@ -4,6 +4,12 @@ import {
   BIZUM_NET,
   buildDailyPace,
   buildCycleCalendar,
+  buildMonthlyCsv,
+  buildPaydayBudget,
+  estimateNextPayday,
+  buildMovementsCsv,
+  chatGptPrompt,
+  flowType,
   cleanName,
   detectSavingsAccounts,
   accountsFromTransactions,
@@ -18,6 +24,7 @@ import {
   replaceAccountTransactions,
   suggestPattern,
   type Transaction,
+  type RecurringCharge,
   type UserRule,
 } from "./money"
 
@@ -463,5 +470,115 @@ describe("pay cycles", () => {
 
   it("stays on calendar months for mid-month payers", () => {
     expect(buildCycleCalendar([pay("2026-08-15"), pay("2026-09-15"), pay("2026-10-15")]).active).toBe(false)
+  })
+})
+
+describe("period presets follow the pay cycle", () => {
+  it("'Este mes' right after a month-end payday covers only the new cycle", async () => {
+    const { periodStart } = await import("./useFinance")
+    const pay = (date: string) => tx(date, 1500, "ABONO DE NOMINA POR TRANSFERENCIA // INGRESO POR NÓMINA O PENSIÓN // EMPRESA SL")
+    const data = normalizeTransactions([
+      pay("2026-09-28"), pay("2026-10-28"), pay("2026-11-28"),
+      tx("2026-11-20", -100, "MERCADONA"), tx("2026-11-29", -40, "MERCADONA"),
+    ])
+    const today = "2026-11-29"
+    const current = buildCycleCalendar(data).toSynthetic(today).slice(0, 7)
+    expect(current).toBe("2026-12")
+    const from = periodStart("1m", current)
+    expect(from).toBe("2026-12-01")
+    const result = analyze({ transactions: data, from, to: today, today })
+    expect(result.cycle.periods).toEqual([{ label: "2026-12", from: "2026-11-28", to: "2026-11-29" }])
+    expect(result.view.expense).toBeCloseTo(40)
+    expect(result.view.income).toBeCloseTo(1500)
+  })
+})
+
+describe("CSV export for ChatGPT", () => {
+  const PAY = "ABONO DE NOMINA POR TRANSFERENCIA // INGRESO POR NÓMINA O PENSIÓN // EMPRESA SL"
+  const data = normalizeTransactions([
+    tx("2026-09-30", 1489.04, PAY, { balanceAfter: 2000 }),
+    tx("2026-09-30", -775, "TRASPASO // TRASPASO A CUENTA // TRP SALDO INF CARGADO EN 01820000000000005678", { balanceAfter: 1225 }),
+    tx("2026-09-30", 775, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Hucha", balanceAfter: 775 }),
+    tx("2026-10-05", -45.2, "PAGO CON TARJETA EN SUPERMERCADOS // PAGO CON TARJETA // MERCADONA · 4000000000001234", { balanceAfter: 1179.8 }),
+    tx("2026-10-06", 10, "PAGO CON TARJETA EN SUPERMERCADOS // PAGO CON TARJETA // MERCADONA", { balanceAfter: 1189.8 }),
+    tx("2026-10-12", -20, "BIZUM // OTROS // ENVIADO: cena", { balanceAfter: 1169.8 }),
+    tx("2026-10-30", -115, "TRASPASO // TRASPASO A CUENTA // YO", { account: "Hucha", balanceAfter: 660 }),
+    tx("2026-10-31", 1489.04, PAY, { balanceAfter: 2658.84 }),
+  ])
+  const savingsAccounts = ["Hucha"]
+  const analysis = analyze({ transactions: data, savingsAccounts, from: "2026-10-01", to: "2026-10-31", today: "2026-11-20" })
+
+  it("labels every movement with how it counts", () => {
+    expect(data.map((t) => flowType(t, savingsAccounts))).toEqual([
+      "ingreso", "traspaso interno", "ahorro: entrada", "gasto", "devolución", "bizum enviado", "ahorro: salida", "ingreso",
+    ])
+  })
+
+  it("exports the period's movements with pay-cycle month and masked numbers", () => {
+    const csv = buildMovementsCsv(analysis, data, savingsAccounts)
+    expect(csv.startsWith("﻿")).toBe(true)
+    const lines = csv.trim().split("\r\n")
+    expect(lines[0]).toContain('"fecha","mes","cuenta","comercio","descripcion","categoria","tipo","recurrente","importe","saldo_despues"')
+    expect(lines).toHaveLength(1 + 7) // the 31/10 payroll opens the next cycle
+    expect(lines[1]).toMatch(/^"2026-09-30","2026-10","Cuenta"/)
+    expect(csv).not.toMatch(/\d{10,}/)
+    expect(csv).toContain("•••• 5678")
+    expect(csv).toContain("•••• 1234")
+    expect(csv).toContain('"Mercadona"')
+  })
+
+  it("exports a monthly summary whose categories add up to the spending", () => {
+    const csv = buildMonthlyCsv(analysis)
+    const [header, row] = csv.replace("﻿", "").trim().split("\r\n").map((line) => line.split(","))
+    const value = (name: string) => Number(row![header!.indexOf(`"${name}"`)])
+    expect(row![0]).toBe('"2026-10"')
+    expect(value("ingresos")).toBeCloseTo(1489.04)
+    expect(value("gastos")).toBeCloseTo(55.2)
+    expect(value("ahorro_neto")).toBeCloseTo(660)
+    expect(value("saldo_ahorro_fin")).toBeCloseTo(660)
+    const categoryTotal = header!.reduce((sum, name, i) => (name.startsWith('"gasto_') ? sum + Number(row![i]) : sum), 0)
+    expect(categoryTotal).toBeCloseTo(value("gastos"))
+  })
+
+  it("writes a prompt that names both files", () => {
+    const prompt = chatGptPrompt(analysis, { movements: "m.csv", monthly: "r.csv" })
+    expect(prompt).toContain("m.csv")
+    expect(prompt).toContain("r.csv")
+    expect(prompt).toContain("nómina a nómina")
+  })
+})
+
+describe("money until payday", () => {
+  it("expects the next month-end payroll, moved to Monday on weekends", () => {
+    // Oct 31 2026 was a Saturday (paid Monday 2/11); Nov 30 2026 is a Monday.
+    expect(estimateNextPayday(["2026-08-31", "2026-09-30", "2026-11-02"], "2026-11-21")).toEqual({ date: "2026-11-30", estimated: false })
+    // Paid on the 1st–2nd: next one at the start of December.
+    expect(estimateNextPayday(["2026-09-01", "2026-10-01", "2026-11-02"], "2026-11-21")).toEqual({ date: "2026-12-01", estimated: false })
+    // No payroll history: end of the month.
+    expect(estimateNextPayday([], "2026-11-21")).toEqual({ date: "2026-11-30", estimated: true })
+  })
+
+  it("splits the spending balance over the days left after pending bills", () => {
+    const PAY = "ABONO DE NOMINA POR TRANSFERENCIA // INGRESO POR NÓMINA O PENSIÓN // EMPRESA SL"
+    const data = normalizeTransactions([
+      tx("2026-09-30", 1500, PAY, { balanceAfter: 1500 }),
+      tx("2026-11-02", 1500, PAY, { balanceAfter: 400 }),
+      tx("2026-11-20", -100, "MERCADONA", { balanceAfter: 300 }),
+      tx("2026-11-20", 1000, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Hucha", balanceAfter: 1000 }),
+    ])
+    const recurring = [
+      { name: "Digi", amount: 15, nextDate: "2026-11-29", kind: "bill" },
+      { name: "Netflix", amount: 12, nextDate: "2026-12-05", kind: "subscription" },
+    ] as unknown as RecurringCharge[]
+    const budget = buildPaydayBudget(data, recurring, ["Hucha"], "2026-11-21")!
+    expect(budget.nextPayday).toBe("2026-11-30")
+    expect(budget.daysLeft).toBe(9)
+    expect(budget.available).toBe(300)
+    expect(budget.pendingItems.map((item) => item.name)).toEqual(["Digi"])
+    expect(budget.perDay).toBeCloseTo((300 - 15) / 9)
+
+    const broke = buildPaydayBudget(normalizeTransactions([tx("2026-11-20", -5, "X", { balanceAfter: 10 })]), recurring, [], "2026-11-21")!
+    expect(broke.perDay).toBe(0)
+    expect(broke.estimated).toBe(true)
   })
 })

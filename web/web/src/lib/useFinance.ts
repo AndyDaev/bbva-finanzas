@@ -9,6 +9,10 @@ import {
   cleanName,
   formatDay,
   guessAccountName,
+  addMonths,
+  buildMonthlyCsv,
+  buildMovementsCsv,
+  chatGptPrompt,
   isoDate,
   normalizeTransactions,
   replaceAccountTransactions,
@@ -73,9 +77,13 @@ export type RuleSuggestion = {
 
 const PERIOD_MONTHS: Record<Exclude<Period, "custom" | "month">, number> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12 }
 
-/** First day of the month that makes the range cover exactly `months` calendar months, today included. */
-export function periodStart(period: Exclude<Period, "custom" | "month">, today = new Date()) {
-  return isoDate(new Date(today.getFullYear(), today.getMonth() - (PERIOD_MONTHS[period] - 1), 1))
+/**
+ * First day of the range covering the last N months, the current one included. Months are
+ * counted from `anchorMonth` (YYYY-MM): the current pay cycle when cycles apply, so a
+ * payroll at the end of a month never mixes two cycles into "Este mes".
+ */
+export function periodStart(period: Exclude<Period, "custom" | "month">, anchorMonth = isoDate(new Date()).slice(0, 7)) {
+  return addMonths(`${anchorMonth}-01`, -(PERIOD_MONTHS[period] - 1))
 }
 
 // ───── Module-level singleton state (one app, one store) ─────
@@ -220,6 +228,8 @@ function applyData(data: StoreData) {
   updatedAt.value = data.updatedAt || null
   syncBudgetDraft()
   saveCache(data)
+  // Presets depend on the pay cycle we are in, which is only known once data is loaded.
+  if (period.value !== "custom" && period.value !== "month") applyPeriod(period.value)
 }
 
 function isUnauthorized(error: unknown) {
@@ -256,7 +266,7 @@ function applyPeriod(next: Period) {
   period.value = next
   selectedMonth.value = null
   if (next === "custom" || next === "month") return
-  from.value = periodStart(next)
+  from.value = periodStart(next, currentMonth.value)
   to.value = isoDate(new Date())
 }
 
@@ -679,6 +689,39 @@ async function copyChatgpt() {
   flash("Resumen copiado. Pégalo en ChatGPT.")
 }
 
+function downloadFile(name: string, content: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }))
+  const link = document.createElement("a")
+  link.href = url
+  link.download = name
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/**
+ * Two CSVs of the selected period (movements + monthly summary) plus a ready-made prompt
+ * in the clipboard, to analyse the finances with ChatGPT. Card and account numbers are masked.
+ */
+async function exportForChatGpt() {
+  const result = analysis.value
+  const range = `${result.cycle.from}_${result.cycle.to}`
+  const files = { movements: `movimientos_${range}.csv`, monthly: `resumen-mensual_${range}.csv` }
+  downloadFile(files.movements, buildMovementsCsv(result, accountTx.value, savingsAccounts.value))
+  // A short gap so browsers do not drop the second download.
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  downloadFile(files.monthly, buildMonthlyCsv(result))
+  let copied = false
+  try {
+    await navigator.clipboard.writeText(chatGptPrompt(result, files))
+    copied = true
+  } catch {
+    // Clipboard may be blocked; the files are still downloaded.
+  }
+  flash(copied ? "2 CSV descargados y texto para ChatGPT copiado: súbelos y pega el texto." : "2 CSV descargados para ChatGPT.")
+}
+
 function clearLocal() {
   if (!window.confirm("¿Borrar la copia local de este dispositivo? Los datos en la nube no se borran.")) return
   clearLocalData()
@@ -708,7 +751,7 @@ export function useFinance() {
     // actions
     flash, applyPeriod, applyMonth, stepMonth, init, doLogin, doLogout, importFiles, scanTicket, saveTicketDraft, removeTicket,
     persistBudgets, setCategory, unlockCategory, upsertRule, acceptSuggestion, removeRule, copyChatgpt,
-    clearLocal, openMerchant, openCategory,
+    clearLocal, openMerchant, openCategory, exportForChatGpt,
     // bank
     bank, bankBusy, activeBankSession, loadBank, connectBank, syncBank, renameBankAccount, disconnectBank,
   }

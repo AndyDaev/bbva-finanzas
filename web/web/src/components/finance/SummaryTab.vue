@@ -5,10 +5,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { euro, euroWhole, formatDay, type DailyPace } from "@/lib/money"
+import { euro, euroWhole, formatDay, splitRecurring, type DailyPace } from "@/lib/money"
 import { BUDGET_CATEGORIES, useFinance } from "@/lib/useFinance"
 import BankCard from "./BankCard.vue"
 import SavingsCard from "./SavingsCard.vue"
+import CountUp from "./CountUp.vue"
 import DeltaNote from "./DeltaNote.vue"
 
 const emit = defineEmits<{ "import-account": [name: string] }>()
@@ -47,7 +48,15 @@ const categoryRows = computed(() => {
   })
 })
 
-const recurringTotal = computed(() => analysis.value.recurring.reduce((sum, item) => sum + item.monthly, 0))
+// Subscriptions (services you choose) and bills (rent, utilities, phone…) are counted apart.
+const recurringGroups = computed(() => {
+  const { subscriptions, bills } = splitRecurring(analysis.value.recurring)
+  const total = (items: typeof subscriptions) => items.reduce((sum, item) => sum + item.monthly, 0)
+  return [
+    { key: "subscriptions", title: "Suscripciones", hint: "Servicios que eliges y puedes cancelar", items: subscriptions, monthly: total(subscriptions), empty: "No hay suscripciones activas detectadas." },
+    { key: "bills", title: "Recibos", hint: "Alquiler, suministros, teléfono, seguros", items: bills, monthly: total(bills), empty: "No hay recibos detectados." },
+  ]
+})
 const topInsights = computed(() => analysis.value.insights.slice(0, 6))
 </script>
 
@@ -55,6 +64,37 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
   <div class="flex flex-wrap gap-2">
     <Badge v-for="item in topInsights" :key="item" variant="secondary" class="whitespace-normal text-left">{{ item }}</Badge>
   </div>
+
+  <!-- Until payday: what can be spent per day once pending bills are covered -->
+  <Card v-if="analysis.payday && !viewingPastMonth">
+    <CardContent class="grid gap-6 pt-6 sm:grid-cols-[1.3fr_1fr]">
+      <div class="space-y-3">
+        <p class="mono-label">
+          Hasta tu nómina · {{ analysis.payday.estimated ? "~" : "" }}{{ formatDay(analysis.payday.nextPayday) }} · {{ analysis.payday.daysLeft }} {{ analysis.payday.daysLeft === 1 ? "día" : "días" }}
+        </p>
+        <p class="flex items-baseline gap-2">
+          <span class="text-[2.6rem] leading-none font-semibold tracking-[-0.04em]" :class="analysis.payday.perDay < 10 ? 'text-warn' : ''">
+            <CountUp :value="analysis.payday.perDay" :format="(v: number) => euro.format(v)" />
+          </span>
+          <span class="text-sm text-muted-foreground">al día para gastar</span>
+        </p>
+        <p class="text-sm text-muted-foreground">
+          Tienes {{ euro.format(analysis.payday.available) }} en tu cuenta principal<template v-if="analysis.payday.pendingBills > 0">, de los que {{ euro.format(analysis.payday.pendingBills) }} ya están comprometidos en recibos</template>.
+          <template v-if="analysis.payday.perDay < 10"> ⚠ Vas justo hasta el cobro.</template>
+        </p>
+      </div>
+      <div class="space-y-2">
+        <p class="mono-label">Recibos antes de la nómina</p>
+        <ul v-if="analysis.payday.pendingItems.length" class="divide-y divide-dashed divide-white/10 text-sm">
+          <li v-for="item in analysis.payday.pendingItems" :key="item.name + item.date" class="flex items-center justify-between gap-3 py-1.5">
+            <span class="min-w-0 truncate">{{ item.name }} <span class="text-xs text-muted-foreground">· {{ formatDay(item.date).slice(0, 5) }}</span></span>
+            <span class="shrink-0 tabular-nums">{{ euro.format(item.amount) }}</span>
+          </li>
+        </ul>
+        <p v-else class="text-sm text-muted-foreground">No hay recibos ni suscripciones pendientes antes del cobro.</p>
+      </div>
+    </CardContent>
+  </Card>
 
   <!-- Month pace -->
   <section v-if="pace && analysis.forecast && !viewingPastMonth" class="grid gap-3 lg:grid-cols-5">
@@ -170,18 +210,19 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
     </Card>
   </section>
 
-  <!-- Subscriptions and advice -->
+  <!-- Subscriptions and bills, counted apart -->
   <section class="grid gap-3 lg:grid-cols-2">
-    <Card>
+    <Card v-for="group in recurringGroups" :key="group.key">
       <CardHeader>
-        <CardTitle>Suscripciones y recibos</CardTitle>
+        <p class="mono-label">{{ group.hint }}</p>
+        <CardTitle class="text-xl">{{ group.title }}</CardTitle>
         <CardDescription>
-          <template v-if="analysis.recurring.length">{{ analysis.recurring.length }} activos · ~{{ euro.format(recurringTotal) }}/mes · {{ euroWhole.format(recurringTotal * 12) }}/año</template>
+          <template v-if="group.items.length">{{ group.items.length }} activos · ~{{ euro.format(group.monthly) }}/mes · {{ euroWhole.format(group.monthly * 12) }}/año</template>
           <template v-else>Se detectan por su ritmo de cobro (mensual o anual)</template>
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-1">
-        <div v-for="item in analysis.recurring" :key="item.key" class="flex items-start justify-between gap-3 border-t border-dashed border-white/10 py-2 first:border-0">
+        <div v-for="item in group.items" :key="item.key" class="flex items-start justify-between gap-3 border-t border-dashed border-white/10 py-2 first:border-0">
           <div class="min-w-0">
             <p class="flex flex-wrap items-center gap-2 font-medium">
               <span class="truncate">{{ item.name }}</span>
@@ -198,10 +239,13 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
             <p class="text-xs text-muted-foreground tabular-nums">{{ euroWhole.format(item.annual) }}/año</p>
           </div>
         </div>
-        <p v-if="!analysis.recurring.length" class="text-sm text-muted-foreground">Con 2–3 cobros regulares aparecerán aquí tus suscripciones y recibos.</p>
+        <p v-if="!group.items.length" class="text-sm text-muted-foreground">{{ group.empty }}</p>
       </CardContent>
     </Card>
+  </section>
 
+  <!-- Advice -->
+  <section>
     <Card>
       <CardHeader>
         <CardTitle>Qué mejorar</CardTitle>

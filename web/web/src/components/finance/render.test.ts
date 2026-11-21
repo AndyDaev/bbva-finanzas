@@ -59,7 +59,8 @@ describe("App renders every tab with data", () => {
 
   it("summary shows forecast, recurring and cushion", async () => {
     const html = await renderTab("resumen")
-    expect(html).toContain("Suscripciones y recibos")
+    expect(html).toContain("Suscripciones")
+    expect(html).toContain("Recibos")
     expect(html).toContain("Netflix")
     expect(html).toContain("Ritmo de gasto")
     expect(html).toContain("En qué gastas")

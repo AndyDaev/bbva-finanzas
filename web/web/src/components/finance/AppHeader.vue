@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { useFinance } from "@/lib/useFinance"
 import RevealText from "./RevealText.vue"
 
-const { busy, scanBusy, offline, updatedLabel, importFiles, scanTicket, copyChatgpt, doLogout, activeBankSession, bankBusy, syncBank } = useFinance()
+const { busy, scanBusy, offline, updatedLabel, importFiles, scanTicket, copyChatgpt, exportForChatGpt, doLogout, activeBankSession, bankBusy, syncBank } = useFinance()
 const fileInput = ref<HTMLInputElement | null>(null)
 const ticketInput = ref<HTMLInputElement | null>(null)
 const menuOpen = ref(false)
@@ -64,6 +64,7 @@ onBeforeUnmount(() => document.removeEventListener("click", closeOnOutside))
             <Button v-if="activeBankSession" variant="ghost" class="w-full justify-start" :disabled="busy" @click="openImport(); menuOpen = false">Importar Excel</Button>
             <Button variant="ghost" class="w-full justify-start" :disabled="scanBusy" @click="ticketInput?.click(); menuOpen = false">{{ scanBusy ? "Leyendo ticket…" : "Escanear ticket" }}</Button>
             <Button variant="ghost" class="w-full justify-start" @click="copyChatgpt(); menuOpen = false">Copiar para ChatGPT</Button>
+            <Button variant="ghost" class="w-full justify-start" @click="exportForChatGpt(); menuOpen = false">Exportar CSV para ChatGPT</Button>
             <Button variant="ghost" class="w-full justify-start" @click="doLogout(); menuOpen = false">Salir</Button>
           </div>
         </Transition>

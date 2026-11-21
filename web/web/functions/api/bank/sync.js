@@ -6,6 +6,7 @@ import {
   fetchTransactionsPage,
   isConfigured,
   mapBankTransaction,
+  planForwardBalances,
   matchExistingAccount,
   planBankUpsert,
   EXCEL_BOOKING_LAG_DAYS,
@@ -112,7 +113,44 @@ async function writeRows(db, account, rows, now) {
  * Rebuilds missing balances backwards from the bank's booked balance in one statement:
  * balance after a row = booked − sum of every later row. Rows with a balance are kept.
  */
+/** End-of-day balance among same-day rows: the one no other row of the day starts from. */
+function endOfDay(rows) {
+  const starts = rows.map((row) => Math.round((row.balance_after - row.amount) * 100))
+  const last = rows.find((row) => !starts.includes(Math.round(row.balance_after * 100)))
+  return (last || rows[rows.length - 1]).balance_after
+}
+
 async function backfillBalances(env, db, account, request) {
+  const gap = await db.prepare(`SELECT MIN(date) AS first FROM transactions WHERE account = ? AND balance_after IS NULL`).bind(account.accountName).first()
+  if (!gap?.first) return
+  // Preferred: walk forward from the last day before the gap whose balances are known.
+  const anchorDay = await db
+    .prepare(`SELECT MAX(date) AS day FROM transactions WHERE account = ? AND date < ? AND balance_after IS NOT NULL`)
+    .bind(account.accountName, gap.first)
+    .first()
+  if (anchorDay?.day) {
+    const sameDay = await db
+      .prepare(`SELECT amount, balance_after FROM transactions WHERE account = ? AND date = ? AND balance_after IS NOT NULL`)
+      .bind(account.accountName, anchorDay.day)
+      .all()
+    const following = await db
+      .prepare(`SELECT id, date, amount, balance_after FROM transactions WHERE account = ? AND date > ? ORDER BY date, id`)
+      .bind(account.accountName, anchorDay.day)
+      .all()
+    const updates = planForwardBalances(following.results || [], endOfDay(sameDay.results || []))
+    if (updates.length) {
+      await db
+        .prepare(
+          `UPDATE transactions AS t SET balance_after = j.balance
+           FROM (SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.balance') AS balance FROM json_each(?)) AS j
+           WHERE t.id = j.id`,
+        )
+        .bind(JSON.stringify(updates))
+        .run()
+    }
+    return
+  }
+  // No known balance before the gap (first sync): work back from the bank's booked balance.
   const booked = await fetchBookedBalance(env, account.uid, request).catch(() => null)
   if (!booked) return
   await db
@@ -170,7 +208,7 @@ export async function onRequestPost(context) {
             data = await fetchTransactionsPage(env, account.uid, dateFrom, null, request)
           } else throw error
         }
-        rows.push(...(data.transactions || []).map((raw) => mapBankTransaction(raw, account.accountName, accountKey(account))).filter(Boolean))
+        rows.push(...(data.transactions || []).map((raw) => mapBankTransaction(raw, account.accountName, accountKey(account), account.uid)).filter(Boolean))
         key = data.continuation_key || null
         if (!key) break
       }

@@ -6,6 +6,7 @@ import {
   mapBankTransaction,
   maskIban,
   matchExistingAccount,
+  planForwardBalances,
   pickBookedBalance,
   planBankUpsert,
 } from "./enablebanking.js"
@@ -146,5 +147,45 @@ describe("planBankUpsert never duplicates", () => {
     const existing = [row("tx_late", "2026-11-18", -5, "x"), row("tx_far", "2026-11-01", -5, "x")]
     const plan = planBankUpsert(existing, [row("eb_a", "2026-11-16", -5, "y")])
     expect(plan.inserts).toHaveLength(1)
+  })
+})
+
+describe("sync keeps one row per movement", () => {
+  const row = (id, date, amount, text, extra = {}) => ({ id, date, amount, text, ...extra })
+
+  it("updates a row stored under the id an earlier version used", () => {
+    const raw = { entry_reference: "ref-9", transaction_amount: { amount: "28.12" }, credit_debit_indicator: "DBIT", booking_date: "2026-11-16" }
+    const mapped = mapBankTransaction(raw, "BBVA 4694", "ES00 •••• 0000", "uid-test")
+    const legacy = mapBankTransaction(raw, "BBVA 4694", "uid-test")
+    expect(mapped.aliasIds).toEqual([legacy.id])
+    const plan = planBankUpsert([row(legacy.id, "2026-11-16", -28.12, "OLD")], [mapped])
+    expect(plan.inserts).toHaveLength(0)
+    expect(plan.updates[0].id).toBe(legacy.id)
+  })
+
+  it("matches the same movement when the bank appends the counterparty later", () => {
+    const existing = [row("eb_old", "2026-11-16", -28.12, "PAGO CON TARJETA EN SUPERMERCADOS // PAGO CON TARJETA // MERCADONA RONDA OUTEIRO A CORUÑA ES")]
+    const incoming = [row("eb_new", "2026-11-16", -28.12, "PAGO CON TARJETA EN SUPERMERCADOS // PAGO CON TARJETA // MERCADONA RONDA OUTEIRO A CORUãA ES · MERCADONA RONDA OUTEIRO")]
+    const plan = planBankUpsert(existing, incoming)
+    expect(plan.inserts).toHaveLength(0)
+    expect(plan.updates[0].id).toBe("eb_old")
+  })
+
+  it("keeps two genuine identical purchases", () => {
+    const text = "PAGO CON TARJETA // DR WASH LA CORUNA ES · DR WASH"
+    const plan = planBankUpsert([], [row("eb_a", "2026-11-09", -1.5, text), row("eb_b", "2026-11-09", -1.5, text)])
+    expect(plan.inserts).toHaveLength(2)
+  })
+
+  it("fills missing balances forward from the last real balance", () => {
+    const rows = [
+      row("a", "2026-11-20", -10, "", { balance_after: 1520 }),
+      row("b", "2026-11-23", -15, "", { balance_after: null }),
+      row("c", "2026-11-23", -20, "", { balance_after: null }),
+    ]
+    expect(planForwardBalances(rows, 1530)).toEqual([
+      { id: "b", balance: 1505 },
+      { id: "c", balance: 1485 },
+    ])
   })
 })

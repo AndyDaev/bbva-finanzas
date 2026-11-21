@@ -21,7 +21,7 @@ import {
   monthKey,
   shortMonth,
 } from "./format"
-import { buildCycleCalendar } from "./cycles"
+import { buildCycleCalendar, detectPaydays } from "./cycles"
 import { accountsFromTransactions, endOfDayBalance, type Budget, type Transaction } from "./ids"
 
 // ───────────────────────────── Types ─────────────────────────────
@@ -99,6 +99,8 @@ export type RecurringCharge = {
   nextDate: string
   chargedThisMonth: boolean
   status: "stable" | "increase" | "new"
+  /** Bills keep the house running (rent, utilities, phone, insurance); subscriptions are services you choose. */
+  kind: "subscription" | "bill"
 }
 
 /** Cumulative spend by day of month: this month against the average of recent months. */
@@ -210,6 +212,8 @@ export type Analysis = {
   /** Months are pay cycles (payday → day before next payday) when the payroll pattern allows. */
   cycle: { active: boolean, from: string, to: string, periods: Array<{ label: string, from: string, to: string }> }
   savingsLedger: SavingsLedger | null
+  /** Money left until the next payday (only when the period reaches today). */
+  payday: PaydayBudget | null
   balances: BalanceSeries
   cushion: Cushion | null
   insights: string[]
@@ -244,6 +248,33 @@ function classify(tx: Transaction): Kind {
   if (c === "Bizum recibido" || c === "Bizum enviado") return "bizum"
   if (tx.amount > 0 && c === "Devolución") return "refund"
   return tx.amount >= 0 ? "income" : "expense"
+}
+
+export type FlowType =
+  | "gasto"
+  | "ingreso"
+  | "devolución"
+  | "bizum enviado"
+  | "bizum recibido"
+  | "ahorro: entrada"
+  | "ahorro: salida"
+  | "traspaso interno"
+
+/**
+ * How a movement counts in the analysis, in plain words (for exports). Movements in a
+ * savings account are savings flows; the matching leg in the main account is an internal
+ * transfer, so nothing is counted twice.
+ */
+export function flowType(tx: Transaction, savingsAccounts: string[] = []): FlowType {
+  if (savingsAccounts.includes(tx.account)) return tx.amount >= 0 ? "ahorro: entrada" : "ahorro: salida"
+  switch (classify(tx)) {
+    case "transfer": return "traspaso interno"
+    case "savings": return tx.amount < 0 ? "ahorro: entrada" : "ahorro: salida"
+    case "bizum": return tx.amount > 0 ? "bizum recibido" : "bizum enviado"
+    case "refund": return "devolución"
+    case "income": return "ingreso"
+    default: return "gasto"
+  }
 }
 
 type MerchantAgg = { name: string, category: string, amount: number, count: number }
@@ -728,6 +759,16 @@ function buildBudgetStatuses(budgets: Budget[], months: Map<string, MonthAgg>, t
 
 // ─────────────────────── Recurring / subscriptions ───────────────────────
 
+/** Recurring charges in these categories are bills (housing and obligations), the rest subscriptions. */
+const BILL_CATEGORIES = new Set(["Vivienda", "Suministros", "Telecomunicaciones", "Recibos", "Impuestos y seguros", "Comisiones", "Transferencias"])
+
+export function splitRecurring(recurring: RecurringCharge[]) {
+  return {
+    subscriptions: recurring.filter((item) => item.kind === "subscription"),
+    bills: recurring.filter((item) => item.kind === "bill"),
+  }
+}
+
 /** Categories where a 2-charge history is already enough to flag a new subscription. */
 const SUBSCRIPTION_LIKE = new Set(["Suscripciones", "Telecomunicaciones", "Suministros", "Recibos", "Vivienda", "Impuestos y seguros"])
 
@@ -822,6 +863,7 @@ export function detectRecurring(transactions: Transaction[], todayIso: string): 
       key,
       name: entry.name,
       category: entry.category,
+      kind: BILL_CATEGORIES.has(entry.category) ? "bill" : "subscription",
       cadence,
       amount: last.amount,
       previousAmount,
@@ -1045,6 +1087,85 @@ export function buildSavingsLedger(
   return { accounts, from, to, opening, added, withdrawn, closing, mismatch: Math.abs(gap) > 1 ? Math.round(gap * 100) / 100 : null, byMonth }
 }
 
+// ───────────────────────────── Until payday ─────────────────────────────
+
+export type PaydayBudget = {
+  nextPayday: string
+  /** Days from today until the payday (at least 1). */
+  daysLeft: number
+  /** Balance of the spending accounts (savings pots excluded). */
+  available: number
+  pendingBills: number
+  pendingItems: Array<{ name: string, amount: number, date: string, kind: RecurringCharge["kind"] }>
+  /** What can be spent per day once pending bills are covered. */
+  perDay: number
+  /** True when there is no payroll history and the end of the month is assumed. */
+  estimated: boolean
+}
+
+function nextWorkingDay(date: string) {
+  const day = new Date(`${date}T12:00:00`).getDay()
+  return day === 6 ? addDays(date, 2) : day === 0 ? addDays(date, 1) : date
+}
+
+function monthEnd(month: string) {
+  const [y, m] = month.split("-").map(Number)
+  return `${month}-${String(daysInMonth(y!, m! - 1)).padStart(2, "0")}`
+}
+
+/**
+ * Next payday from the usual position of the payroll relative to the month end (a payroll
+ * pushed from Saturday 31/10 to Monday 02/11 still means "paid at month end"), moved to the
+ * next working day when it falls on a weekend.
+ */
+export function estimateNextPayday(paydays: string[], todayIso: string) {
+  if (paydays.length < 2) return { date: nextWorkingDay(monthEnd(monthKey(todayIso))), estimated: true }
+  const offsets = paydays.map((date) => {
+    const day = Number(date.slice(8, 10))
+    const dim = Number(monthEnd(monthKey(date)).slice(8, 10))
+    if (day >= 15) return dim - day // days before the month end
+    // Paid on the first working day after a month end that fell on a weekend: a month-end payroll.
+    const previousEnd = addDays(`${monthKey(date)}-01`, -1)
+    if (nextWorkingDay(previousEnd) !== previousEnd && nextWorkingDay(previousEnd) === date) return 0
+    return -day // days after the previous month end
+  })
+  const offset = Math.round(median(offsets))
+  const last = paydays[paydays.length - 1]!
+  for (let step = -1; step <= 3; step += 1) {
+    const month = monthKey(addMonths(`${monthKey(todayIso)}-01`, step))
+    const candidate = nextWorkingDay(addDays(monthEnd(month), -offset))
+    if (candidate > last && candidate >= todayIso) return { date: candidate, estimated: false }
+  }
+  return { date: nextWorkingDay(addMonths(last, 1)), estimated: true }
+}
+
+export function buildPaydayBudget(
+  transactions: Transaction[],
+  recurring: RecurringCharge[],
+  savingsAccounts: string[],
+  todayIso: string,
+): PaydayBudget | null {
+  const spendingAccounts = accountsFromTransactions(transactions).filter((item) => item.balance != null && !savingsAccounts.includes(item.name))
+  if (!spendingAccounts.length) return null
+  const { date: nextPayday, estimated } = estimateNextPayday(detectPaydays(transactions), todayIso)
+  const daysLeft = Math.max(1, daysBetween(todayIso, nextPayday))
+  const available = sum(spendingAccounts.map((item) => item.balance!))
+  const pendingItems = recurring
+    .filter((item) => item.nextDate >= todayIso && item.nextDate < nextPayday)
+    .map((item) => ({ name: item.name, amount: item.amount, date: item.nextDate, kind: item.kind }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+  const pendingBills = sum(pendingItems.map((item) => item.amount))
+  return {
+    nextPayday,
+    daysLeft,
+    available,
+    pendingBills,
+    pendingItems,
+    perDay: Math.max(0, available - pendingBills) / daysLeft,
+    estimated,
+  }
+}
+
 // ───────────────────────────── Orchestrator ─────────────────────────────
 
 /**
@@ -1137,6 +1258,7 @@ export function analyze(input: {
     savingsAccounts,
     cycle: { active: calendar.active, from: realFrom, to: lastPeriod?.to ?? realTo, periods },
     savingsLedger: buildSavingsLedger(input.transactions, savingsAccounts, periods),
+    payday: input.to >= todayIso ? buildPaydayBudget(input.transactions, recurring, savingsAccounts, todayIso) : null,
     balances,
     cushion,
     insights: buildInsights(view, recurring, budgets, forecast, cushion, compare),
@@ -1167,7 +1289,9 @@ function buildInsights(
   if (compare?.expense.pct != null && Math.abs(compare.expense.pct) >= 0.05) {
     insights.push(`Gastas un ${formatPct(compare.expense.pct)} respecto al periodo anterior.`)
   }
-  if (recurring.length) insights.push(`${recurring.length} cargos recurrentes: ~${euro.format(recurringMonthly(recurring))}/mes (${euro.format(recurringMonthly(recurring) * 12)}/año).`)
+  const { subscriptions, bills } = splitRecurring(recurring)
+  if (subscriptions.length) insights.push(`${subscriptions.length} suscripciones: ~${euro.format(recurringMonthly(subscriptions))}/mes (${euro.format(recurringMonthly(subscriptions) * 12)}/año).`)
+  if (bills.length) insights.push(`${bills.length} recibos: ~${euro.format(recurringMonthly(bills))}/mes (${euro.format(recurringMonthly(bills) * 12)}/año).`)
   for (const item of recurring.filter((r) => r.status === "increase")) {
     insights.push(`${item.name} ha subido de ${euro.format(item.previousAmount)} a ${euro.format(item.amount)}.`)
   }
@@ -1206,12 +1330,12 @@ function buildAdvice(
     }
   }
   if (view.fixedSpend > 0) summary.push(`Unos ${euro.format(view.fixedSpend)} son fijos; ${euro.format(view.flexibleSpend)} son flexibles.`)
-  if (recurring.length) {
-    summary.push(`${recurring.length} cargos recurrentes suman ~${euro.format(recurringMonthly(recurring))} al mes.`)
-  }
+  const split = splitRecurring(recurring)
+  if (split.bills.length) summary.push(`Tus recibos suman ~${euro.format(recurringMonthly(split.bills))} al mes.`)
+  if (split.subscriptions.length) summary.push(`Tus suscripciones suman ~${euro.format(recurringMonthly(split.subscriptions))} al mes.`)
   const increase = recurring.find((item) => item.status === "increase")
   if (increase) actions.push(`${increase.name} ha subido ${euro.format(increase.amount - increase.previousAmount)}/mes: revisa la tarifa o cámbiala.`)
-  const subs = recurring.filter((item) => item.category === "Suscripciones")
+  const subs = split.subscriptions
   if (subs.length >= 3) actions.push(`Tienes ${subs.length} suscripciones (${euro.format(sum(subs.map((s) => s.annual)))}/año): ¿usas todas?`)
   const mover = view.monthCompare?.categories[0]
   if (mover && mover.delta > 0) actions.push(`${mover.name} subió ${euro.format(mover.delta)} vs el mes anterior: ahí hay margen.`)
@@ -1274,16 +1398,13 @@ export function chatgptBrief(analysis: Analysis) {
     "Comercios:",
     ...view.merchants.slice(0, 8).map((item) => `- ${item.name}: ${euro.format(item.amount)} · ${item.count || 0} veces`),
   )
-  if (analysis.recurring.length) {
-    lines.push(
-      "",
-      "Cargos recurrentes:",
-      ...analysis.recurring.map((item) => {
-        const note = item.status === "increase" ? ` (subió desde ${euro.format(item.previousAmount)})` : item.status === "new" ? " (nuevo)" : ""
-        return `- ${item.name}: ${euro.format(item.amount)}/${item.cadence === "yearly" ? "año" : "mes"} (${euro.format(item.annual)}/año)${note}`
-      }),
-    )
+  const recurringLine = (item: RecurringCharge) => {
+    const note = item.status === "increase" ? ` (subió desde ${euro.format(item.previousAmount)})` : item.status === "new" ? " (nuevo)" : ""
+    return `- ${item.name}: ${euro.format(item.amount)}/${item.cadence === "yearly" ? "año" : "mes"} (${euro.format(item.annual)}/año)${note}`
   }
+  const groups = splitRecurring(analysis.recurring)
+  if (groups.bills.length) lines.push("", "Recibos:", ...groups.bills.map(recurringLine))
+  if (groups.subscriptions.length) lines.push("", "Suscripciones:", ...groups.subscriptions.map(recurringLine))
   if (view.monthCompare) {
     lines.push("", `Tendencia ${view.monthCompare.currentLabel} vs ${view.monthCompare.previousLabel}:`, ...view.monthCompare.badges.map((item) => `- ${item}`))
   }

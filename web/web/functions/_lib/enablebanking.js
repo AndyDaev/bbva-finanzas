@@ -205,7 +205,7 @@ function clean(text) {
 }
 
 /** Enable Banking transaction → app transaction row (category is resolved client-side). */
-export function mapBankTransaction(raw, accountName, accountUid) {
+export function mapBankTransaction(raw, accountName, accountKey, legacyKey) {
   const value = Number(raw?.transaction_amount?.amount)
   const date = raw?.booking_date || raw?.value_date || raw?.transaction_date
   if (!Number.isFinite(value) || !date) return null
@@ -217,7 +217,9 @@ export function mapBankTransaction(raw, accountName, accountUid) {
   const balance = Number(raw.balance_after_transaction?.amount)
   const reference = raw.entry_reference || `${date}|${amount.toFixed(2)}|${text.toLowerCase()}`
   return {
-    id: `eb_${hash32(`${accountUid}|${reference}`)}`,
+    id: `eb_${hash32(`${accountKey}|${reference}`)}`,
+    // Id the same movement got from earlier versions (keyed on the account uid), to update it instead of duplicating it.
+    aliasIds: legacyKey && legacyKey !== accountKey ? [`eb_${hash32(`${legacyKey}|${reference}`)}`] : [],
     date: String(date).slice(0, 10),
     amount,
     text,
@@ -242,10 +244,36 @@ export function backfillBalances(rows, booked) {
   return rows
 }
 
+/**
+ * Fills missing balances walking forward from the last real balance before them: unlike
+ * working back from the bank's booked balance, this stays right when that balance is a few
+ * minutes stale (it may not include today's movements yet). Rows must be sorted by date.
+ * Rows that already have a balance keep it and re-anchor the walk.
+ */
+export function planForwardBalances(rows, anchorBalance) {
+  const updates = []
+  let running = anchorBalance
+  for (const row of rows) {
+    running = Math.round((running + Number(row.amount)) * 100) / 100
+    if (row.balance_after == null) updates.push({ id: row.id, balance: running })
+    else running = Number(row.balance_after)
+  }
+  return updates
+}
+
 /** A card purchase can be booked by the bank a few days after the date the Excel shows. */
 export const EXCEL_BOOKING_LAG_DAYS = 4
 
-const contentKey = (row) => `${row.date}|${Number(row.amount).toFixed(2)}|${String(row.text || "").trim().toLowerCase()}`
+/** Main part of a bank text, normalised: BBVA may append " · <counterparty>" or mangle Ñ between fetches. */
+function textCore(text) {
+  return String(text || "")
+    .split(" · ")[0]
+    .replace(/ã|Ã±/g, "ñ")
+    .toLowerCase()
+    .replace(/[^a-z0-9ñ]+/g, " ")
+    .trim()
+}
+const contentKey = (row) => `${row.date}|${Number(row.amount).toFixed(2)}|${textCore(row.text)}`
 const daysApart = (a, b) => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000)
 
 /**
@@ -279,6 +307,12 @@ export function planBankUpsert(existing, incoming) {
     if (byId.has(row.id) && !claimed.has(row.id)) {
       claimed.add(row.id)
       updates.push(row)
+      continue
+    }
+    const alias = (row.aliasIds || []).find((id) => byId.has(id) && !claimed.has(id) && !incomingIds.has(id))
+    if (alias) {
+      claimed.add(alias)
+      updates.push({ ...row, id: alias })
       continue
     }
     const older = (bankByContent.get(contentKey(row)) || []).find((id) => !claimed.has(id) && !incomingIds.has(id))

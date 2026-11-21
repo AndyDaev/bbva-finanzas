@@ -8,3 +8,6 @@ data/tickets.json
 *.key
 *.crt
 data/
+
+# Exports with personal data (CSV for ChatGPT, etc.)
+*.csv
