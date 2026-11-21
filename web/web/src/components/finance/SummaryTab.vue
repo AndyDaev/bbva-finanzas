@@ -195,6 +195,48 @@ const accountsSummary = computed(() => {
   </section>
   </FoldSection>
 
+  <!-- What you buy: products from receipts read with AI -->
+  <FoldSection v-if="analysis.shopping" id="compras" title="Qué compras" :summary="`${analysis.shopping.tickets} tickets · ${euroWhole.format(analysis.shopping.total)}`">
+    <section class="grid gap-3 lg:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardDescription>Por tipo de producto · {{ analysis.shopping.tickets }} tickets escaneados en el periodo</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ul class="space-y-2">
+            <li v-for="item in analysis.shopping.categories" :key="item.name" class="grid grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-3 text-sm">
+              <span class="truncate">{{ item.name }}</span>
+              <span class="h-2 overflow-hidden rounded-full bg-muted">
+                <span class="bar-grow block h-full rounded-full bg-[var(--series-1)]" :style="{ width: `${Math.max(2, item.share * 100)}%` }" />
+              </span>
+              <span class="text-right tabular-nums">{{ euroWhole.format(item.amount) }} <span class="text-xs text-muted-foreground">{{ Math.round(item.share * 100) }} %</span></span>
+            </li>
+          </ul>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardDescription>Lo que más repites y cómo cambia su precio</CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-1">
+          <div v-for="item in analysis.shopping.repeated" :key="item.name" class="flex items-start justify-between gap-3 border-t border-dashed border-white/10 py-2 text-sm first:border-0">
+            <div class="min-w-0">
+              <p class="truncate font-medium">{{ item.name }}</p>
+              <p class="text-xs text-muted-foreground">{{ item.count }} veces · {{ euro.format(item.amount) }} en total</p>
+            </div>
+            <div class="shrink-0 text-right">
+              <p class="tabular-nums">{{ euro.format(item.lastPrice) }}</p>
+              <p v-if="item.change != null && Math.abs(item.change) >= 0.01" class="text-xs tabular-nums" :class="item.change > 0 ? 'text-bad' : 'text-good'">
+                {{ item.change > 0 ? "▲" : "▼" }} {{ Math.round(Math.abs(item.change) * 100) }} % desde {{ euro.format(item.firstPrice) }}
+              </p>
+            </div>
+          </div>
+          <p v-if="!analysis.shopping.repeated.length" class="text-sm text-muted-foreground">Cuando escanees el mismo producto más de una vez verás aquí cómo cambia su precio.</p>
+        </CardContent>
+      </Card>
+    </section>
+  </FoldSection>
+
   <!-- Subscriptions and bills, counted apart -->
   <FoldSection id="fijos" title="Fijos" :summary="recurringSummary">
   <section class="grid gap-3 lg:grid-cols-2">

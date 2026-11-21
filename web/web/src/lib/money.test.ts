@@ -3,6 +3,7 @@ import { csvToRows, parseAmount, parseDate, rowsToTransactions } from "./importF
 import {
   BIZUM_NET,
   buildDailyPace,
+  buildShopping,
   buildCycleCalendar,
   buildMonthlyCsv,
   buildPaydayBudget,
@@ -580,5 +581,34 @@ describe("money until payday", () => {
     const broke = buildPaydayBudget(normalizeTransactions([tx("2026-11-20", -5, "X", { balanceAfter: 10 })]), recurring, [], "2026-11-21")!
     expect(broke.perDay).toBe(0)
     expect(broke.estimated).toBe(true)
+  })
+})
+
+describe("shopping from receipts", () => {
+  const tickets = [
+    { merchant: "Mercadona", date: "2026-10-03", total: 6.5, items: [
+      { name: "Leche semidesnatada 6×1 L", amount: 5.4, quantity: 1, unitPrice: 5.4, category: "Lácteos y huevos" },
+      { name: "Patatas fritas", amount: 1.1, category: "Snacks y dulces" },
+    ] },
+    { merchant: "Mercadona", date: "2026-11-05", total: 7.2, items: [
+      { name: "Leche semidesnatada 6×1 L", amount: 5.94, quantity: 1, unitPrice: 5.94, category: "Lácteos y huevos" },
+      { name: "Patatas fritas", amount: 1.26, category: "Snacks y dulces" },
+    ] },
+    // OCR-only ticket (no categories): ignored here.
+    { merchant: "Gadis", date: "2026-11-06", total: 3, items: [{ name: "PAN", amount: 3 }] },
+  ]
+
+  it("groups by product type and tracks the unit price", () => {
+    const shopping = buildShopping(tickets, "2026-10-01", "2026-11-30")!
+    expect(shopping.tickets).toBe(2)
+    expect(shopping.total).toBeCloseTo(13.7)
+    expect(shopping.categories[0]).toMatchObject({ name: "Lácteos y huevos" })
+    const milk = shopping.repeated.find((item) => item.name.startsWith("Leche"))!
+    expect(milk.count).toBe(2)
+    expect(milk.change).toBeCloseTo(0.1)
+  })
+
+  it("is null without AI-read receipts in the period", () => {
+    expect(buildShopping(tickets, "2026-12-01", "2026-12-31")).toBeNull()
   })
 })

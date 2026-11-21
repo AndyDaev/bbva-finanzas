@@ -115,6 +115,14 @@ export async function saveTicket(ticket: StoredTicket) {
   return api<{ tickets: StoredTicket[], updatedAt: string }>("/api/tickets", send("PUT", { ticket }))
 }
 
+/** Reads a receipt photo on the server with Claude (vision). Throws "no-key" when it is not set up. */
+export async function scanReceipt(image: string, mediaType: string) {
+  return api<{ ticket: { merchant: string, date: string | null, total: number, items: Array<{ name: string, raw: string, quantity: number, unitPrice: number | null, amount: number, category: string }> }, month: { scans: number, usd: number, limits: { perDay: number, perMonth: number, usdPerMonth: number } } }>(
+    "/api/tickets/scan",
+    send("POST", { image, mediaType }),
+  )
+}
+
 export async function deleteTicket(id: string) {
   return api<{ tickets: StoredTicket[], updatedAt: string }>(`/api/tickets/${encodeURIComponent(id)}`, send("DELETE"))
 }

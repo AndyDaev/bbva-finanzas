@@ -12,6 +12,7 @@ import {
   addMonths,
   buildMonthlyCsv,
   buildMovementsCsv,
+  buildProductsCsv,
   chatGptPrompt,
   isoDate,
   normalizeTransactions,
@@ -342,7 +343,21 @@ function stepMonth(direction: -1 | 1) {
   if (next) applyMonth(next)
 }
 
+/** Home-screen shortcuts open the app with ?accion=ticket or ?accion=movimientos. */
+function applyLaunchAction() {
+  if (typeof window === "undefined") return
+  const params = new URLSearchParams(window.location.search)
+  const action = params.get("accion")
+  if (!action) return
+  if (action === "ticket") tab.value = "tickets"
+  else if (action === "movimientos") tab.value = "movimientos"
+  params.delete("accion")
+  const rest = params.toString()
+  window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""))
+}
+
 async function init() {
+  applyLaunchAction()
   const cache = loadCache()
   if (cache.transactions.length || cache.tickets.length) applyData(cache)
   const ok = await checkSession()
@@ -551,7 +566,15 @@ async function scanTicket(file: File) {
   scanBusy.value = true
   notice.value = ""
   try {
-    draft.value = await scanTicketImage(file)
+    const scanned = await scanTicketImage(file)
+    const { reader, month, ...ticketDraft } = scanned
+    draft.value = ticketDraft
+    if (reader === "ai" && month) {
+      // About 0,92 € per dollar; shown so the cost is always visible.
+      flash(`Ticket leído con IA · ${month.scans} este mes · ~${(month.usd * 0.92).toFixed(3).replace(".", ",")} € en total`)
+    } else if (reader === "ocr") {
+      flash("Ticket leído sin IA (lector básico): revisa los productos.")
+    }
     selectedTxId.value = matchTransactions(draft.value, periodTx.value)[0]?.id || "none"
     tab.value = "tickets"
   } catch (error) {
@@ -749,11 +772,16 @@ function downloadFile(name: string, content: string) {
 async function exportForChatGpt() {
   const result = analysis.value
   const range = `${result.cycle.from}_${result.cycle.to}`
-  const files = { movements: `movimientos_${range}.csv`, monthly: `resumen-mensual_${range}.csv` }
+  const productsCsv = buildProductsCsv(result, tickets.value)
+  const files = { movements: `movimientos_${range}.csv`, monthly: `resumen-mensual_${range}.csv`, ...(productsCsv ? { products: `productos_${range}.csv` } : {}) }
   downloadFile(files.movements, buildMovementsCsv(result, accountTx.value, savingsAccounts.value))
   // A short gap so browsers do not drop the second download.
   await new Promise((resolve) => setTimeout(resolve, 400))
   downloadFile(files.monthly, buildMonthlyCsv(result))
+  if (productsCsv && files.products) {
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    downloadFile(files.products, productsCsv)
+  }
   let copied = false
   try {
     await navigator.clipboard.writeText(chatGptPrompt(result, files))
@@ -761,7 +789,8 @@ async function exportForChatGpt() {
   } catch {
     // Clipboard may be blocked; the files are still downloaded.
   }
-  flash(copied ? "2 CSV descargados y texto para ChatGPT copiado: súbelos y pega el texto." : "2 CSV descargados para ChatGPT.")
+  const count = productsCsv ? 3 : 2
+  flash(copied ? `${count} CSV descargados y texto para ChatGPT copiado: súbelos y pega el texto.` : `${count} CSV descargados para ChatGPT.`)
 }
 
 function clearLocal() {

@@ -2,11 +2,29 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { computed, ref } from "vue"
+import { CameraIcon } from "@lucide/vue"
 import { euro, formatDay } from "@/lib/money"
+import { PRODUCT_CATEGORIES } from "@/lib/tickets"
 import type { StoredTicket } from "@/lib/store"
 import { useFinance } from "@/lib/useFinance"
 
-const { draft, tickets, transactions, ticketMatches, selectedTxId, saveTicketDraft, removeTicket } = useFinance()
+const { draft, tickets, transactions, ticketMatches, selectedTxId, saveTicketDraft, removeTicket, scanTicket, scanBusy } = useFinance()
+const photoInput = ref<HTMLInputElement | null>(null)
+
+async function onPhoto(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) await scanTicket(file)
+  input.value = ""
+}
+
+/** Sum of the products vs the ticket total: a big gap means something was misread. */
+const itemsGap = computed(() => {
+  if (!draft.value || !draft.value.total) return 0
+  const sum = draft.value.items.reduce((total, item) => total + (Number(item.amount) || 0), 0)
+  return Math.round((draft.value.total - sum) * 100) / 100
+})
 
 function linkedLabel(ticket: StoredTicket) {
   if (!ticket.transactionId) return "Sin movimiento asociado"
@@ -21,6 +39,19 @@ function addItem() {
 </script>
 
 <template>
+  <input ref="photoInput" class="hidden" type="file" accept="image/*" capture="environment" @change="onPhoto">
+  <Card v-if="!draft" class="border-dashed">
+    <CardContent class="flex flex-wrap items-center justify-between gap-4 pt-6">
+      <div class="space-y-1">
+        <p class="font-medium">Escanea un ticket</p>
+        <p class="text-sm text-muted-foreground">Se lee cada producto y su tipo, y se une solo al cobro del banco.</p>
+      </div>
+      <Button class="min-h-12 gap-2 px-5 text-base" :disabled="scanBusy" @click="photoInput?.click()">
+        <CameraIcon class="size-5" aria-hidden="true" />{{ scanBusy ? "Leyendo ticket…" : "Hacer foto del ticket" }}
+      </Button>
+    </CardContent>
+  </Card>
+
   <Card v-if="draft">
     <CardHeader>
       <CardTitle>Revisar ticket</CardTitle>
@@ -36,12 +67,19 @@ function addItem() {
         <label class="grid gap-1 text-xs text-muted-foreground">Total<Input v-model.number="draft.total" type="number" step="0.01" class="min-h-11" /></label>
       </div>
       <div class="space-y-2">
-        <div v-for="(item, index) in draft.items" :key="index" class="grid grid-cols-[1fr_100px_auto] gap-2 sm:grid-cols-[1fr_120px_auto]">
-          <Input v-model="item.name" placeholder="Artículo" class="min-h-11" aria-label="Artículo" />
+        <div v-for="(item, index) in draft.items" :key="index" class="grid grid-cols-[1fr_100px_auto] gap-2 sm:grid-cols-[1fr_10rem_120px_auto]">
+          <Input v-model="item.name" placeholder="Artículo" class="col-span-3 min-h-11 sm:col-span-1" aria-label="Artículo" />
+          <select v-model="item.category" class="min-h-11 rounded-md border bg-background px-2 text-sm" aria-label="Tipo de producto">
+            <option :value="undefined">Sin tipo</option>
+            <option v-for="name in PRODUCT_CATEGORIES" :key="name" :value="name">{{ name }}</option>
+          </select>
           <Input v-model.number="item.amount" type="number" step="0.01" class="min-h-11" aria-label="Importe" />
           <Button variant="ghost" class="min-h-11" @click="draft.items.splice(index, 1)">Quitar</Button>
         </div>
       </div>
+      <p v-if="Math.abs(itemsGap) >= 0.05" class="text-sm text-warn">
+        ⚠ Los productos suman {{ euro.format(draft.total - itemsGap) }} y el total es {{ euro.format(draft.total) }}: revisa si falta o sobra algo.
+      </p>
       <div class="flex flex-wrap gap-2">
         <Button variant="outline" class="min-h-11" @click="addItem">Añadir artículo</Button>
         <select v-model="selectedTxId" class="min-h-11 min-w-[240px] rounded-md border bg-background px-3 text-sm" aria-label="Asociar a compra">
@@ -72,5 +110,4 @@ function addItem() {
       </CardContent>
     </Card>
   </div>
-  <p v-if="!tickets.length && !draft" class="text-sm text-muted-foreground">Escanea un ticket con la cámara o sube una foto.</p>
 </template>

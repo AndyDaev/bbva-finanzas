@@ -1,6 +1,22 @@
 import type { Transaction } from "./ids"
+import { scanReceipt } from "./store"
 
-export type TicketItem = { name: string, amount: number }
+/** Product types the AI reader assigns (kept in sync with functions/api/tickets/scan.js). */
+export const PRODUCT_CATEGORIES = [
+  "Frutas y verduras", "Carne y pescado", "Lácteos y huevos", "Pan y bollería", "Despensa", "Congelados", "Platos preparados",
+  "Bebidas", "Alcohol", "Snacks y dulces", "Limpieza y hogar", "Higiene y cuidado", "Mascotas", "Otros",
+]
+
+export type TicketItem = {
+  name: string
+  amount: number
+  /** Line as printed on the receipt (AI reader only). */
+  raw?: string
+  quantity?: number
+  unitPrice?: number | null
+  /** Product category, e.g. «Lácteos y huevos» (AI reader only). */
+  category?: string
+}
 
 export type TicketDraft = {
   merchant: string
@@ -10,7 +26,38 @@ export type TicketDraft = {
   rawText: string
 }
 
-export async function scanTicketImage(file: File): Promise<TicketDraft> {
+/** Longest side sent to the AI reader: enough to read a receipt, small enough to be cheap. */
+const MAX_SIDE = 1568
+
+/** Downscales the photo and returns it as base64 JPEG (no data: prefix). */
+async function compressPhoto(file: File) {
+  const bitmap = await createImageBitmap(file)
+  const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height))
+  const canvas = document.createElement("canvas")
+  canvas.width = Math.round(bitmap.width * scale)
+  canvas.height = Math.round(bitmap.height * scale)
+  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close()
+  return canvas.toDataURL("image/jpeg", 0.85).split(",")[1]!
+}
+
+/**
+ * Reads a receipt photo. Uses the AI reader on the server (one product per line, with its
+ * category); when it is not set up or unreachable, falls back to on-device OCR (Tesseract).
+ */
+export async function scanTicketImage(file: File): Promise<TicketDraft & { reader: "ai" | "ocr", month?: { scans: number, usd: number } }> {
+  try {
+    const { ticket, month } = await scanReceipt(await compressPhoto(file), "image/jpeg")
+    const items = ticket.items.map((item) => ({ ...item, amount: Math.round(item.amount * 100) / 100 }))
+    return { merchant: ticket.merchant, date: ticket.date, total: ticket.total, items, rawText: items.map((item) => item.raw).join("\n"), reader: "ai", month }
+  } catch (error) {
+    const fallback = error instanceof TypeError || (error instanceof Error && error.message === "no-key")
+    if (!fallback) throw error
+  }
+  return { ...(await scanTicketWithOcr(file)), reader: "ocr" }
+}
+
+async function scanTicketWithOcr(file: File): Promise<TicketDraft> {
   // OCR engine is heavy: only load it when a ticket is scanned.
   const { default: Tesseract } = await import("tesseract.js")
   const result = await Tesseract.recognize(file, "spa+eng", {

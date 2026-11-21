@@ -20,12 +20,26 @@ export default defineConfig({
         display: 'standalone',
         start_url: '/',
         lang: 'es',
+        // PNG icons let Android install it as a real app, which is what enables the shortcuts.
         icons: [
+          { src: 'favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+          { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+        // Long-press the app icon: quick actions, which can also be dragged to the home screen.
+        shortcuts: [
           {
-            src: 'favicon.svg',
-            sizes: 'any',
-            type: 'image/svg+xml',
-            purpose: 'any maskable',
+            name: 'Escanear ticket',
+            short_name: 'Ticket',
+            url: '/?accion=ticket',
+            icons: [{ src: 'shortcut-ticket.png', sizes: '96x96', type: 'image/png' }],
+          },
+          {
+            name: 'Movimientos',
+            short_name: 'Movimientos',
+            url: '/?accion=movimientos',
+            icons: [{ src: 'shortcut-movements.png', sizes: '96x96', type: 'image/png' }],
           },
         ],
       },

@@ -19,6 +19,7 @@ import {
   isoDate,
   labelMonth,
   monthKey,
+  normalizeText,
   shortMonth,
 } from "./format"
 import { buildCycleCalendar, detectPaydays } from "./cycles"
@@ -120,8 +121,17 @@ export type TicketLike = {
   merchant: string
   date?: string | null
   total: number
-  items: Array<{ name: string, amount: number }>
+  items: Array<{ name: string, amount: number, quantity?: number, unitPrice?: number | null, category?: string }>
   transactionId?: string | null
+}
+
+/** What the scanned receipts say you buy (products with a category come from the AI reader). */
+export type Shopping = {
+  tickets: number
+  total: number
+  categories: Array<{ name: string, amount: number, share: number }>
+  /** Products bought more than once, with how their unit price moved. */
+  repeated: Array<{ name: string, count: number, amount: number, firstPrice: number, lastPrice: number, change: number | null }>
 }
 
 export type View = {
@@ -212,6 +222,7 @@ export type Analysis = {
   /** Months are pay cycles (payday → day before next payday) when the payroll pattern allows. */
   cycle: { active: boolean, from: string, to: string, periods: Array<{ label: string, from: string, to: string }> }
   savingsLedger: SavingsLedger | null
+  shopping: Shopping | null
   /** Money left until the next payday (only when the period reaches today). */
   payday: PaydayBudget | null
   balances: BalanceSeries
@@ -1258,6 +1269,7 @@ export function analyze(input: {
     savingsAccounts,
     cycle: { active: calendar.active, from: realFrom, to: lastPeriod?.to ?? realTo, periods },
     savingsLedger: buildSavingsLedger(input.transactions, savingsAccounts, periods),
+    shopping: buildShopping(tickets, realFrom, lastPeriod?.to ?? realTo),
     payday: input.to >= todayIso ? buildPaydayBudget(input.transactions, recurring, savingsAccounts, todayIso) : null,
     balances,
     cushion,
@@ -1265,6 +1277,51 @@ export function analyze(input: {
     trendBadges,
     advice: buildAdvice(view, recurring, budgets, forecast, cushion),
   }
+}
+
+// ─────────────────────── Shopping (receipt products) ───────────────────────
+
+const productKey = (name: string) => normalizeText(name)
+
+export function buildShopping(tickets: TicketLike[], from: string, to: string): Shopping | null {
+  const inRange = tickets.filter((ticket) => !ticket.date || (ticket.date >= from && ticket.date <= to))
+  const withCategories = inRange.filter((ticket) => ticket.items.some((item) => item.category))
+  if (!withCategories.length) return null
+  const byCategory = new Map<string, number>()
+  const byProduct = new Map<string, { name: string, count: number, amount: number, prices: Array<{ date: string, price: number }> }>()
+  let total = 0
+  const ordered = [...withCategories].sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
+  for (const ticket of ordered) {
+    for (const item of ticket.items) {
+      if (!Number.isFinite(item.amount) || item.amount === 0) continue
+      const category = item.category || "Otros"
+      byCategory.set(category, (byCategory.get(category) || 0) + item.amount)
+      total += item.amount
+      if (item.amount <= 0) continue
+      const key = productKey(item.name)
+      if (!key) continue
+      const current = byProduct.get(key) || { name: item.name, count: 0, amount: 0, prices: [] }
+      current.count += 1
+      current.amount += item.amount
+      const quantity = item.quantity && item.quantity > 0 ? item.quantity : 1
+      current.prices.push({ date: ticket.date || "", price: item.unitPrice ?? item.amount / quantity })
+      byProduct.set(key, current)
+    }
+  }
+  const categories = [...byCategory.entries()]
+    .filter(([, amount]) => amount > 0)
+    .map(([name, amount]) => ({ name, amount, share: total > 0 ? amount / total : 0 }))
+    .sort((a, b) => b.amount - a.amount)
+  const repeated = [...byProduct.values()]
+    .filter((item) => item.count > 1)
+    .map((item) => {
+      const firstPrice = item.prices[0]!.price
+      const lastPrice = item.prices[item.prices.length - 1]!.price
+      return { name: item.name, count: item.count, amount: item.amount, firstPrice, lastPrice, change: firstPrice > 0 ? (lastPrice - firstPrice) / firstPrice : null }
+    })
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 12)
+  return { tickets: withCategories.length, total, categories, repeated }
 }
 
 // ─────────────────────── Insights and advice ───────────────────────

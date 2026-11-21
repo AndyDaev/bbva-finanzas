@@ -1,4 +1,4 @@
-import { flowType, type Analysis } from "./analysis"
+import { flowType, type Analysis, type TicketLike } from "./analysis"
 import { cleanName, merchantKey } from "./categorize"
 import { buildCycleCalendar } from "./cycles"
 import { labelMonth } from "./format"
@@ -80,14 +80,28 @@ export function buildMonthlyCsv(analysis: Analysis) {
   )
 }
 
-/** Text to paste in ChatGPT together with the two files. */
-export function chatGptPrompt(analysis: Analysis, files: { movements: string, monthly: string }) {
+/** One row per product of the receipts scanned in the period (empty when there are none). */
+export function buildProductsCsv(analysis: Analysis, tickets: TicketLike[]) {
+  const { from, to } = analysis.cycle
+  const rows = tickets
+    .filter((ticket) => !ticket.date || (ticket.date >= from && ticket.date <= to))
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
+    .flatMap((ticket) =>
+      ticket.items.map((item) => [ticket.date || "", ticket.merchant, maskNumbers(item.name), item.category ?? "", item.quantity ?? 1, item.unitPrice ?? null, item.amount]),
+    )
+  if (!rows.length) return null
+  return toCsv(["fecha", "tienda", "producto", "tipo", "cantidad", "precio_unidad", "importe"], rows)
+}
+
+/** Text to paste in ChatGPT together with the files. */
+export function chatGptPrompt(analysis: Analysis, files: { movements: string, monthly: string, products?: string }) {
   const months = analysis.cycle.periods.map((period) => labelMonth(period.label)).join(", ")
   return [
-    "Te adjunto dos CSV con mis finanzas personales (cuentas BBVA, datos reales del banco).",
+    (files.products ? "Te adjunto tres CSV con" : "Te adjunto dos CSV con") + " mis finanzas personales (cuentas BBVA, datos reales del banco).",
     "",
     `1. ${files.movements}: un movimiento por fila. Columnas: fecha (día del banco), mes (mes de nómina), cuenta, comercio, descripcion (texto del banco), categoria, tipo, recurrente, importe (negativo = sale dinero), saldo_despues.`,
     `2. ${files.monthly}: resumen por mes con ingresos, gastos, ahorro neto, lo que metí y saqué de la cuenta de ahorro, su saldo y el gasto por categoría.`,
+    ...(files.products ? [`3. ${files.products}: los productos de mis tickets de compra escaneados (tienda, producto, tipo, cantidad, precio por unidad e importe).`] : []),
     "",
     "Cómo leer los datos:",
     `- Los meses van de nómina a nómina, no del 1 al 31 (${months}).`,
@@ -100,6 +114,7 @@ export function chatGptPrompt(analysis: Analysis, files: { movements: string, mo
     "1. En qué se me va el dinero cada mes y qué ha cambiado entre meses.",
     "2. Gastos evitables o que se pueden reducir, con importes concretos.",
     "3. Suscripciones y recibos: cuáles revisar, cancelar o renegociar.",
+    ...(files.products ? ["   Con los tickets: en qué tipo de productos gasto más en el súper y qué podría cambiar o comprar más barato."] : []),
     "4. Por qué ahorro más unos meses que otros y cuándo tiro de la cuenta de ahorro.",
     "5. Un plan mensual realista: cuánto ahorrar el día de cobro y un tope semanal de gasto variable.",
     "Responde en español, con cifras y tablas cuando ayuden.",
