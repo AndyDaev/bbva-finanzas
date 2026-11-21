@@ -13,11 +13,13 @@ import DeltaNote from "./DeltaNote.vue"
 
 const emit = defineEmits<{ "import-account": [name: string] }>()
 const {
-  analysis, view, accounts, budgetDraft, categoryColors, savingsAccounts,
+  analysis, view, accounts, budgetDraft, categoryColors, savingsAccounts, selectedMonth, currentMonth,
   persistBudgets, copyChatgpt, clearLocal, openMerchant, openCategory,
 } = useFinance()
 
 const editingBudgets = ref(false)
+/** Pace and forecast describe the month in progress: hide them when looking at a past month. */
+const viewingPastMonth = computed(() => selectedMonth.value != null && selectedMonth.value < currentMonth.value)
 
 // ── Month pace (cumulative spend vs average month) ──
 type PacePoint = DailyPace["points"][number]
@@ -55,7 +57,7 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
   </div>
 
   <!-- Month pace -->
-  <section v-if="pace && analysis.forecast" class="grid gap-3 lg:grid-cols-5">
+  <section v-if="pace && analysis.forecast && !viewingPastMonth" class="grid gap-3 lg:grid-cols-5">
     <Card class="lg:col-span-3">
       <CardHeader>
         <CardTitle>Ritmo de gasto en {{ pace.label }}</CardTitle>

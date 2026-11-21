@@ -1,6 +1,8 @@
 import { computed, ref } from "vue"
 import {
   accountsFromTransactions,
+  buildCycleCalendar,
+  daysInMonth,
   detectSavingsAccounts,
   analyze,
   chatgptBrief,
@@ -47,7 +49,7 @@ import {
 import { matchTransactions, parseTicketText, scanTicketImage, type TicketDraft } from "./tickets"
 
 export type Tab = "resumen" | "evolucion" | "comercios" | "tickets" | "movimientos" | "reglas"
-export type Period = "1m" | "3m" | "6m" | "1y" | "custom"
+export type Period = "1m" | "3m" | "6m" | "1y" | "custom" | "month"
 
 export const BUDGET_CATEGORIES = [
   "Supermercado",
@@ -69,10 +71,10 @@ export type RuleSuggestion = {
   sample: string
 }
 
-const PERIOD_MONTHS: Record<Exclude<Period, "custom">, number> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12 }
+const PERIOD_MONTHS: Record<Exclude<Period, "custom" | "month">, number> = { "1m": 1, "3m": 3, "6m": 6, "1y": 12 }
 
 /** First day of the month that makes the range cover exactly `months` calendar months, today included. */
-export function periodStart(period: Exclude<Period, "custom">, today = new Date()) {
+export function periodStart(period: Exclude<Period, "custom" | "month">, today = new Date()) {
   return isoDate(new Date(today.getFullYear(), today.getMonth() - (PERIOD_MONTHS[period] - 1), 1))
 }
 
@@ -94,6 +96,8 @@ const account = ref("all")
 const category = ref("all")
 const query = ref("")
 const period = ref<Period>("6m")
+/** Month picked in the month selector (YYYY-MM, a pay cycle when cycles apply). */
+const selectedMonth = ref<string | null>(null)
 const from = ref(periodStart("6m"))
 const to = ref(isoDate(new Date()))
 const draft = ref<TicketDraft | null>(null)
@@ -250,9 +254,45 @@ async function cloudOrLocal<T>(remote: () => Promise<T>, onRemote: (result: T) =
 
 function applyPeriod(next: Period) {
   period.value = next
-  if (next === "custom") return
+  selectedMonth.value = null
+  if (next === "custom" || next === "month") return
   from.value = periodStart(next)
   to.value = isoDate(new Date())
+}
+
+// ───── Month selector ─────
+
+const cycleCalendar = computed(() => buildCycleCalendar(normalized.value))
+/** Month (or pay cycle) we are in today. */
+const currentMonth = computed(() => cycleCalendar.value.toSynthetic(isoDate(new Date())).slice(0, 7))
+/** Months with movements, newest first (labels are pay cycles when cycles apply). */
+const availableMonths = computed(() => {
+  const calendar = cycleCalendar.value
+  const months = new Set(normalized.value.map((tx) => calendar.toSynthetic(tx.date).slice(0, 7)))
+  months.add(currentMonth.value)
+  return [...months].filter((month) => month <= currentMonth.value).sort().reverse()
+})
+
+/** Shows one month: from its first day to its last (or today for the current one). */
+function applyMonth(month: string) {
+  period.value = "month"
+  selectedMonth.value = month
+  from.value = `${month}-01`
+  if (month >= currentMonth.value) {
+    to.value = isoDate(new Date())
+  } else {
+    const [y, m] = month.split("-").map(Number)
+    to.value = `${month}-${String(daysInMonth(y!, m! - 1)).padStart(2, "0")}`
+  }
+}
+
+/** Steps to the previous (-1) or next (+1) month that has movements. */
+function stepMonth(direction: -1 | 1) {
+  const months = availableMonths.value
+  const current = selectedMonth.value ?? currentMonth.value
+  const index = months.indexOf(current)
+  const next = index < 0 ? months[0] : months[index - direction]
+  if (next) applyMonth(next)
 }
 
 async function init() {
@@ -661,12 +701,12 @@ export function useFinance() {
   return {
     // state
     authed, authChecked, tab, transactions, tickets, budgets, rules, budgetDraft, updatedAt, notice, busy,
-    offline, account, category, query, period, from, to, draft, selectedTxId, scanBusy, suggestion,
+    offline, account, category, query, period, selectedMonth, availableMonths, currentMonth, from, to, draft, selectedTxId, scanBusy, suggestion,
     // derived
     sortedRules, normalized, analysis, view, periodTx, filtered, accounts, categories, hasData, ticketMatches,
     ruleCounts, updatedLabel, categoryColors, savingsAccounts,
     // actions
-    flash, applyPeriod, init, doLogin, doLogout, importFiles, scanTicket, saveTicketDraft, removeTicket,
+    flash, applyPeriod, applyMonth, stepMonth, init, doLogin, doLogout, importFiles, scanTicket, saveTicketDraft, removeTicket,
     persistBudgets, setCategory, unlockCategory, upsertRule, acceptSuggestion, removeRule, copyChatgpt,
     clearLocal, openMerchant, openCategory,
     // bank
