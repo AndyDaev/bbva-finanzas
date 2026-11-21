@@ -12,6 +12,7 @@ import {
   addMonths,
   buildMonthlyCsv,
   buildMovementsCsv,
+  buildShopping,
   buildProductsCsv,
   chatGptPrompt,
   isoDate,
@@ -105,10 +106,11 @@ const offline = ref(false)
 const account = ref("all")
 const category = ref("all")
 const query = ref("")
-const period = ref<Period>("6m")
+// Opens on the pay cycle in progress: what matters day to day.
+const period = ref<Period>("1m")
 /** Month picked in the month selector (YYYY-MM, a pay cycle when cycles apply). */
 const selectedMonth = ref<string | null>(null)
-const from = ref(periodStart("6m"))
+const from = ref(periodStart("1m"))
 const to = ref(isoDate(new Date()))
 const draft = ref<TicketDraft | null>(null)
 const selectedTxId = ref("none")
@@ -179,6 +181,10 @@ const filtered = computed(() => {
 const accounts = computed(() => accountsFromTransactions(transactions.value))
 const categories = computed(() => [...new Set(normalized.value.map((tx) => tx.category))].sort())
 const hasData = computed(() => transactions.value.length > 0 || tickets.value.length > 0)
+/** Product analysis over every receipt read with AI (the Purchases tab is not tied to a period). */
+const shoppingAll = computed(() => buildShopping(tickets.value, "0000-01-01", "9999-12-31"))
+/** Receipt linked to each bank movement, to open it from the movements list. */
+const ticketByTx = computed(() => new Map(tickets.value.filter((ticket) => ticket.transactionId).map((ticket) => [ticket.transactionId!, ticket])))
 const ticketMatches = computed(() => (draft.value ? matchTransactions(draft.value, transactions.value) : []))
 const ruleCounts = computed(() => {
   const counts = new Map<string, number>()
@@ -824,7 +830,7 @@ export function useFinance() {
     offline, account, category, query, period, privacyMode, selectedMonth, availableMonths, currentMonth, from, to, draft, selectedTxId, scanBusy, suggestion,
     // derived
     sortedRules, normalized, analysis, view, periodTx, filtered, accounts, categories, hasData, ticketMatches,
-    ruleCounts, updatedLabel, lastSyncLabel, categoryColors, savingsAccounts,
+    ruleCounts, updatedLabel, lastSyncLabel, shoppingAll, ticketByTx, categoryColors, savingsAccounts,
     // actions
     flash, applyPeriod, applyMonth, stepMonth, init, doLogin, doLogout, importFiles, scanTicket, saveTicketDraft, removeTicket,
     persistBudgets, setCategory, unlockCategory, upsertRule, acceptSuggestion, removeRule, copyChatgpt,

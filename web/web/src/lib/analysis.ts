@@ -129,7 +129,12 @@ export type TicketLike = {
 export type Shopping = {
   tickets: number
   total: number
+  /** Average spend per ticket. */
+  average: number
   categories: Array<{ name: string, amount: number, share: number }>
+  /** Products that take the most money (all of them, bought once or more). */
+  products: Array<{ name: string, category: string, count: number, amount: number, share: number, avgPrice: number }>
+  stores: Array<{ name: string, tickets: number, amount: number }>
   /** Products bought more than once, with how their unit price moved. */
   repeated: Array<{ name: string, count: number, amount: number, firstPrice: number, lastPrice: number, change: number | null }>
 }
@@ -1288,10 +1293,16 @@ export function buildShopping(tickets: TicketLike[], from: string, to: string): 
   const withCategories = inRange.filter((ticket) => ticket.items.some((item) => item.category))
   if (!withCategories.length) return null
   const byCategory = new Map<string, number>()
-  const byProduct = new Map<string, { name: string, count: number, amount: number, prices: Array<{ date: string, price: number }> }>()
+  const byProduct = new Map<string, { name: string, category: string, count: number, amount: number, prices: Array<{ date: string, price: number }> }>()
+  const byStore = new Map<string, { name: string, tickets: number, amount: number }>()
   let total = 0
   const ordered = [...withCategories].sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
   for (const ticket of ordered) {
+    const storeKey = normalizeText(ticket.merchant) || "otros"
+    const store = byStore.get(storeKey) || { name: ticket.merchant || "Otros", tickets: 0, amount: 0 }
+    store.tickets += 1
+    store.amount += ticket.total || ticket.items.reduce((total, item) => total + (item.amount || 0), 0)
+    byStore.set(storeKey, store)
     for (const item of ticket.items) {
       if (!Number.isFinite(item.amount) || item.amount === 0) continue
       const category = item.category || "Otros"
@@ -1300,7 +1311,7 @@ export function buildShopping(tickets: TicketLike[], from: string, to: string): 
       if (item.amount <= 0) continue
       const key = productKey(item.name)
       if (!key) continue
-      const current = byProduct.get(key) || { name: item.name, count: 0, amount: 0, prices: [] }
+      const current = byProduct.get(key) || { name: item.name, category, count: 0, amount: 0, prices: [] }
       current.count += 1
       current.amount += item.amount
       const quantity = item.quantity && item.quantity > 0 ? item.quantity : 1
@@ -1321,7 +1332,11 @@ export function buildShopping(tickets: TicketLike[], from: string, to: string): 
     })
     .sort((a, b) => b.amount - a.amount)
     .slice(0, 12)
-  return { tickets: withCategories.length, total, categories, repeated }
+  const products = [...byProduct.values()]
+    .map((item) => ({ name: item.name, category: item.category, count: item.count, amount: item.amount, share: total > 0 ? item.amount / total : 0, avgPrice: item.amount / item.count }))
+    .sort((a, b) => b.amount - a.amount)
+  const stores = [...byStore.values()].sort((a, b) => b.amount - a.amount)
+  return { tickets: withCategories.length, total, average: total / withCategories.length, categories, products, stores, repeated }
 }
 
 // ─────────────────────── Insights and advice ───────────────────────

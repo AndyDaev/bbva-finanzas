@@ -8,6 +8,7 @@ import { euro, formatDay } from "@/lib/money"
 import { PRODUCT_CATEGORIES } from "@/lib/tickets"
 import type { StoredTicket } from "@/lib/store"
 import { useFinance } from "@/lib/useFinance"
+import ShoppingAnalysis from "./ShoppingAnalysis.vue"
 
 const { draft, tickets, transactions, ticketMatches, selectedTxId, saveTicketDraft, removeTicket, scanTicket, scanBusy } = useFinance()
 const photoInput = ref<HTMLInputElement | null>(null)
@@ -94,6 +95,12 @@ function addItem() {
     </CardContent>
   </Card>
 
+  <ShoppingAnalysis v-if="!draft" />
+
+  <div v-if="tickets.length" class="flex items-end justify-between gap-3">
+    <h2 class="text-xl font-semibold tracking-[-0.02em]">Tus tickets</h2>
+    <p class="text-sm text-muted-foreground">{{ tickets.length }}</p>
+  </div>
   <div class="grid gap-3 md:grid-cols-2">
     <Card v-for="ticket in tickets" :key="ticket.id">
       <CardHeader>

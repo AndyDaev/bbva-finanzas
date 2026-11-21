@@ -31,7 +31,7 @@ watch(activeMonth, () => nextTick(scrollToActive))
 </script>
 
 <template>
-  <div class="glass sticky top-0 z-20 bg-[#020202]/90 -mx-4 border-b border-white/[0.06] px-4 py-2 md:-mx-6 md:px-6">
+  <div class="sticky top-0 z-20 bg-[#020202] -mx-4 border-b border-white/[0.06] px-4 py-2 md:-mx-6 md:px-6">
       <div class="flex items-center gap-1.5" role="group" aria-label="Mes">
         <button type="button" class="pill grid size-9 shrink-0 place-items-center text-base disabled:opacity-30" :disabled="!canGoBack" aria-label="Mes anterior" @click="stepMonth(-1)">‹</button>
         <div ref="monthStrip" class="flex min-w-0 flex-1 gap-1.5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

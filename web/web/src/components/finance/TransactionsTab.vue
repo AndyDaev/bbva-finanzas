@@ -6,9 +6,16 @@ import { Input } from "@/components/ui/input"
 import { XIcon } from "@lucide/vue"
 import { CATEGORY_OPTIONS, cleanName, euro, formatDay, maskNumbers, parseBankText } from "@/lib/money"
 import { useFinance } from "@/lib/useFinance"
+import TicketItems from "./TicketItems.vue"
 
 const PAGE = 100
-const { filtered, suggestion, setCategory, unlockCategory, acceptSuggestion, query, category } = useFinance()
+const { filtered, suggestion, setCategory, unlockCategory, acceptSuggestion, query, category, ticketByTx } = useFinance()
+/** Movement whose receipt is unfolded under it. */
+const openTicket = ref<string | null>(null)
+const ticketOf = (tx: { id?: string }) => (tx.id ? ticketByTx.value.get(tx.id) : undefined)
+function toggleTicket(id?: string) {
+  if (id) openTicket.value = openTicket.value === id ? null : id
+}
 /** Filters set from elsewhere (a category or merchant tapped in the Summary), shown as removable chips. */
 const activeFilters = computed(() => [
   ...(category.value !== "all" ? [{ key: "category", label: category.value, clear: () => { category.value = "all" } }] : []),
@@ -125,10 +132,14 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="tx in shown" :key="tx.id || `${tx.date}-${tx.text}-${tx.amount}-${tx.account}`" class="border-b border-dashed border-white/10 last:border-0 transition-colors hover:bg-white/[0.025]">
+            <template v-for="tx in shown" :key="tx.id || `${tx.date}-${tx.text}-${tx.amount}-${tx.account}`">
+            <tr class="border-b border-dashed border-white/10 last:border-0 transition-colors hover:bg-white/[0.025]">
               <td class="whitespace-nowrap py-1.5 pr-3 tabular-nums">{{ formatDay(tx.date) }}</td>
               <td class="max-w-[320px] py-1.5 pr-3" :title="maskCard(tx.text)">
-                <span class="block truncate">{{ describe(tx.text).name }}</span>
+                <span class="flex min-w-0 items-center gap-2">
+                  <span class="truncate">{{ describe(tx.text).name }}</span>
+                  <button v-if="ticketOf(tx)" type="button" class="pill shrink-0 px-2 py-0.5 text-[0.7rem]" :aria-expanded="openTicket === tx.id" @click="toggleTicket(tx.id)">🧾 Ticket</button>
+                </span>
                 <span v-if="describe(tx.text).detail" class="block truncate text-xs text-muted-foreground">{{ describe(tx.text).detail }}</span>
               </td>
               <td class="py-1.5 pr-3">
@@ -156,6 +167,11 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
               <td class="max-w-[140px] truncate py-1.5 pr-3 text-muted-foreground">{{ tx.account }}</td>
               <td class="whitespace-nowrap py-1.5 text-right tabular-nums" :class="tx.amount > 0 ? 'text-good' : ''">{{ euro.format(tx.amount) }}</td>
             </tr>
+            <tr v-if="openTicket === tx.id && ticketOf(tx)" class="border-b border-dashed border-white/10">
+              <td />
+              <td colspan="4" class="py-2 pr-3"><TicketItems :ticket="ticketOf(tx)!" /></td>
+            </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -187,8 +203,10 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
                   <span class="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-[0.6rem] text-muted-foreground" aria-hidden="true">▼</span>
                 </label>
                 <button v-if="tx.categoryLocked" type="button" class="shrink-0 text-[0.7rem] text-muted-foreground" title="Volver a la categoría automática" @click="unlockCategory(tx)">✎ manual</button>
+                <button v-if="ticketOf(tx)" type="button" class="pill shrink-0 px-2 py-0.5 text-[0.7rem]" :aria-expanded="openTicket === tx.id" @click="toggleTicket(tx.id)">🧾 Ticket</button>
                 <span v-if="describe(tx.text).detail" class="min-w-0 truncate text-xs text-muted-foreground">{{ describe(tx.text).detail }}</span>
               </div>
+              <TicketItems v-if="openTicket === tx.id && ticketOf(tx)" :ticket="ticketOf(tx)!" class="mt-2" />
             </li>
           </ul>
         </section>

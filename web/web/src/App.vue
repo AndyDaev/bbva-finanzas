@@ -27,7 +27,7 @@ const tabs: Array<[Tab, string]> = [
   ["evolucion", "Evolución"],
   ["comercios", "Comercios"],
   ["movimientos", "Movimientos"],
-  ["tickets", "Tickets"],
+  ["tickets", "Compras"],
   ["reglas", "Reglas"],
 ]
 
@@ -122,7 +122,7 @@ onMounted(init)
     </Transition>
 
     <!-- Mobile bottom bar (thumb reach) -->
-    <nav class="glass fixed inset-x-0 bottom-0 z-30 border-t border-white/[0.08] pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Secciones">
+    <nav class="fixed inset-x-0 bottom-0 z-30 bg-[#020202]/95 backdrop-blur-md border-t border-white/[0.08] pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Secciones">
       <Transition name="tab">
         <div v-if="moreOpen" class="absolute right-3 bottom-full mb-2 min-w-[200px] rounded-2xl border border-white/10 bg-[#0b0b0b] p-1.5 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.9)]">
           <button
