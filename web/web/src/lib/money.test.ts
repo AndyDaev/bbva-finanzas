@@ -382,59 +382,88 @@ describe("daily pace", () => {
 describe("payroll month", () => {
   const pay = (date: string, amount = 1489.04) => tx(date, amount, "ABONO DE NOMINA POR TRANSFERENCIA // INGRESO POR NÓMINA O PENSIÓN // EMPRESA SL")
 
-  it("counts a month-end payroll pushed to the 2nd in the month it pays for", () => {
+  it("counts a month-end payroll in the month it pays for (the next one)", () => {
     const data = [pay("2026-08-31"), pay("2026-09-30"), pay("2026-11-02"), tx("2026-10-13", 558, "TRANSFERENCIA RECIBIDA VICTOR")]
     const { transactions, shifts } = payrollAccrual(data)
-    expect(shifts).toEqual([{ paidOn: "2026-11-02", accruedOn: "2026-10-31", amount: 1489.04 }])
-    expect(transactions[2]!.date).toBe("2026-10-31")
-    expect(data[2]!.date).toBe("2026-11-02")
+    expect(shifts).toEqual([
+      { paidOn: "2026-08-31", accruedOn: "2026-09-01", amount: 1489.04 },
+      { paidOn: "2026-09-30", accruedOn: "2026-10-01", amount: 1489.04 },
+    ])
+    expect(transactions[1]!.date).toBe("2026-10-01")
+    expect(transactions[2]!.date).toBe("2026-11-02")
+    expect(data[1]!.date).toBe("2026-09-30")
 
     const october = analyze({ transactions: data, from: "2026-10-01", to: "2026-10-31", today: "2026-11-20" })
     expect(october.view.income).toBeCloseTo(1489.04 + 558)
-    expect(october.payrollShifts).toHaveLength(1)
+    expect(october.payrollShifts.map((s) => s.paidOn)).toEqual(["2026-09-30"])
     const november = analyze({ transactions: data, from: "2026-11-01", to: "2026-11-20", today: "2026-11-20" })
-    expect(november.view.income).toBe(0)
-    expect(november.payrollShifts).toHaveLength(1)
+    expect(november.view.income).toBeCloseTo(1489.04)
+    expect(november.payrollShifts).toHaveLength(0)
   })
 
-  it("leaves start-of-month payers alone", () => {
-    const data = [pay("2026-08-01"), pay("2026-09-02"), pay("2026-10-01")]
-    expect(payrollAccrual(data).shifts).toHaveLength(0)
+  it("leaves mid-month and start-of-month payers alone", () => {
+    expect(payrollAccrual([pay("2026-08-01"), pay("2026-09-02"), pay("2026-10-01")]).shifts).toHaveLength(0)
+    expect(payrollAccrual([pay("2026-08-15"), pay("2026-09-15"), pay("2026-10-28")]).shifts).toHaveLength(0)
   })
 
   it("keeps real dates for balances", () => {
-    const data = [pay("2026-08-31"), pay("2026-09-30"), { ...pay("2026-11-02"), balanceAfter: 3000 }]
-    const result = analyze({ transactions: data, from: "2026-11-01", to: "2026-11-30", today: "2026-11-20" })
-    expect(result.balances.points.at(-1)).toMatchObject({ month: "2026-11", total: 3000 })
+    const data = [pay("2026-08-31"), { ...pay("2026-09-30"), balanceAfter: 3000 }, pay("2026-11-02")]
+    const result = analyze({ transactions: data, from: "2026-09-01", to: "2026-09-30", today: "2026-11-20" })
+    expect(result.balances.points.at(-1)).toMatchObject({ month: "2026-09", total: 3000 })
   })
 })
 
-describe("savings around a shifted payday", () => {
+describe("savings reconcile with the savings account", () => {
   const pay = (date: string) => tx(date, 1489.04, "ABONO DE NOMINA POR TRANSFERENCIA // INGRESO POR NÓMINA O PENSIÓN // EMPRESA SL")
-  const toPot = (date: string, amount: number) => [
-    tx(date, -amount, "TRASPASO // TRASPASO A CUENTA // YO", { account: "Principal" }),
-    tx(date, amount, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Hucha" }),
-  ]
-  const fromPot = (date: string, amount: number) => [
-    tx(date, -amount, "TRASPASO // TRASPASO A CUENTA // YO", { account: "Hucha" }),
-    tx(date, amount, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Principal" }),
-  ]
-
-  it("moves payday savings with the payroll and reports gross in/out", () => {
-    const data = [
-      pay("2026-08-31"), ...toPot("2026-08-31", 630),
-      pay("2026-09-30"), ...toPot("2026-09-30", 775), ...fromPot("2026-09-21", 640),
-      ...fromPot("2026-10-30", 115),
-      pay("2026-11-02"), ...toPot("2026-11-02", 800), ...fromPot("2026-11-16", 80),
+  let balance = 0
+  const toPot = (date: string, amount: number) => {
+    balance += amount
+    return [
+      tx(date, -amount, "TRASPASO // TRASPASO A CUENTA // YO", { account: "Principal" }),
+      tx(date, amount, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Hucha", balanceAfter: balance }),
     ]
-    const options = { transactions: data, savingsAccounts: ["Hucha"], today: "2026-11-20" }
+  }
+  const fromPot = (date: string, amount: number) => {
+    balance -= amount
+    return [
+      tx(date, -amount, "TRASPASO // TRASPASO A CUENTA // YO", { account: "Hucha", balanceAfter: balance }),
+      tx(date, amount, "TRASPASO // TRASPASO DESDE CUENTA // YO", { account: "Principal" }),
+    ]
+  }
+  const data = [
+    pay("2026-08-31"), ...toPot("2026-08-31", 630),
+    ...fromPot("2026-09-21", 640), pay("2026-09-30"), ...toPot("2026-09-30", 775),
+    ...(() => { balance += 350; return [tx("2026-10-14", 350, "INGRESO EN EFECTIVO // INGRESO DE EFECTIVO // 01822204 999", { account: "Hucha", balanceAfter: balance })] })(),
+    ...fromPot("2026-10-30", 115),
+    pay("2026-11-02"), ...toPot("2026-11-02", 800), ...fromPot("2026-11-16", 80),
+  ]
+  const options = { transactions: data, savingsAccounts: ["Hucha"], today: "2026-11-20" }
+
+  it("measures savings on bank dates, even when the payroll month shifts", () => {
     const september = analyze({ ...options, from: "2026-09-01", to: "2026-09-30" })
-    expect(september.view.toSavings).toBeCloseTo(135)
     expect(september.view.savingsIn).toBeCloseTo(775)
     expect(september.view.savingsOut).toBeCloseTo(640)
-    const october = analyze({ ...options, from: "2026-10-01", to: "2026-10-31" })
-    expect(october.view.toSavings).toBeCloseTo(685)
+    expect(september.view.toSavings).toBeCloseTo(135)
     const november = analyze({ ...options, from: "2026-11-01", to: "2026-11-20" })
-    expect(november.view.toSavings).toBeCloseTo(-80)
+    expect(november.view.toSavings).toBeCloseTo(720)
+  })
+
+  it("treats a cash deposit into savings as savings, not income", () => {
+    const october = analyze({ ...options, from: "2026-10-01", to: "2026-10-31" })
+    expect(october.view.toSavings).toBeCloseTo(350 - 115)
+    expect(october.view.income).toBeCloseTo(1489.04) // only the 30/09 payroll, counted in October
+  })
+
+  it("reconciles opening + in − out = closing balance", () => {
+    const all = analyze({ ...options, from: "2026-08-01", to: "2026-11-20" })
+    const ledger = all.savingsLedger!
+    expect(ledger.opening).toBeCloseTo(0)
+    expect(ledger.closing).toBeCloseTo(balance)
+    expect(ledger.opening! + ledger.added - ledger.withdrawn).toBeCloseTo(ledger.closing!)
+    expect(ledger.mismatch).toBeNull()
+    expect(ledger.byMonth.map((m) => m.closing)).toEqual([630, 765, 1000, 1720])
+    const sept = analyze({ ...options, from: "2026-09-01", to: "2026-09-30" }).savingsLedger!
+    expect(sept.opening).toBeCloseTo(630)
+    expect(sept.closing).toBeCloseTo(765)
   })
 })

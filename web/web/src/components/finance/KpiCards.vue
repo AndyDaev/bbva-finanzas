@@ -20,6 +20,8 @@ const payrollNotes = computed(() =>
 
 const cards = computed(() => {
   const { view, compare } = analysis.value
+  // Savings reconcile with the savings account: same figures as the "Cuenta de ahorro" card.
+  const ledger = analysis.value.savingsLedger
   return [
     {
       label: "Ingresos",
@@ -37,11 +39,13 @@ const cards = computed(() => {
     },
     {
       label: "A ahorro",
-      value: view.toSavings,
+      value: ledger ? ledger.added - ledger.withdrawn : view.toSavings,
       format: money,
-      note: view.savingsIn || view.savingsOut
-        ? `Metiste ${money(view.savingsIn)} · sacaste ${money(view.savingsOut)}`
-        : "Neto que acaba en tu cuenta de ahorro",
+      note: ledger?.closing != null
+        ? `Saldo ${money(ledger.closing)} · metiste ${money(ledger.added)} · sacaste ${money(ledger.withdrawn)}`
+        : view.savingsIn || view.savingsOut
+          ? `Metiste ${money(view.savingsIn)} · sacaste ${money(view.savingsOut)}`
+          : "Neto que acaba en tu cuenta de ahorro",
       delta: compare ? { delta: compare.toSavings.delta, pct: compare.toSavings.pct, upIsGood: true } : null,
     },
     {

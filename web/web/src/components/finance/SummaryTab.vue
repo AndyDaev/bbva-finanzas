@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { euro, euroWhole, formatDay, type DailyPace } from "@/lib/money"
 import { BUDGET_CATEGORIES, useFinance } from "@/lib/useFinance"
 import BankCard from "./BankCard.vue"
+import SavingsCard from "./SavingsCard.vue"
 import DeltaNote from "./DeltaNote.vue"
 
 const emit = defineEmits<{ "import-account": [name: string] }>()
@@ -255,6 +256,8 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
       <p v-else-if="!editingBudgets" class="text-sm text-muted-foreground">Sin límites. Pulsa «Editar límites» y pon, por ejemplo, Restauración 150 €.</p>
     </CardContent>
   </Card>
+
+  <SavingsCard />
 
   <BankCard />
 

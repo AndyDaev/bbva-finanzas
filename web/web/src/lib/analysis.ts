@@ -184,6 +184,20 @@ export type BalanceSeries = {
 
 export type Cushion = { balance: number, avgExpense: number, months: number }
 
+/** Savings account reconciliation with bank dates: opening + added − withdrawn = closing. */
+export type SavingsLedger = {
+  accounts: string[]
+  from: string
+  to: string
+  opening: number | null
+  added: number
+  withdrawn: number
+  closing: number | null
+  /** Difference when the movements do not explain the balances (missing data), else null. */
+  mismatch: number | null
+  byMonth: Array<{ month: string, label: string, added: number, withdrawn: number, net: number, closing: number | null }>
+}
+
 export type Analysis = {
   view: View
   compare: PeriodCompare | null
@@ -194,6 +208,7 @@ export type Analysis = {
   savingsAccounts: string[]
   /** Payrolls counted in the month they pay for, not the day they were booked. */
   payrollShifts: PayrollShift[]
+  savingsLedger: SavingsLedger | null
   balances: BalanceSeries
   cushion: Cushion | null
   insights: string[]
@@ -339,6 +354,12 @@ function aggregate(transactions: Transaction[], tickets: TicketLike[], sortedRul
     const kind = classify(tx)
     const agg = bucket(monthKey(tx.date))
 
+    // Everything that happens in a savings account (transfers, cash deposits, interest) is a
+    // savings flow, never income or spending: the sum over time equals the account balance.
+    if (savings.accounts.has(tx.account)) {
+      addSavings(agg, tx.amount)
+      continue
+    }
     if (kind === "transfer") {
       addSavings(agg, savingsDelta(tx, savings))
       continue
@@ -966,34 +987,83 @@ export function buildBalanceSeries(transactions: Transaction[], from: string, to
   return { accounts, points }
 }
 
+// ───────────────────────────── Savings ledger ─────────────────────────────
+
+/** End-of-day balance on `date` for one account (before its first movement: the opening balance). */
+function balanceOnFactory(rows: Transaction[]) {
+  const byDay = new Map<string, Transaction[]>()
+  for (const tx of rows) byDay.set(tx.date, [...(byDay.get(tx.date) || []), tx])
+  const days = [...byDay.keys()].sort()
+  const ends = days.map((day) => endOfDayBalance(byDay.get(day)!))
+  return (date: string) => {
+    let index = -1
+    for (let i = 0; i < days.length && days[i]! <= date; i += 1) index = i
+    if (index >= 0) return ends[index] ?? null
+    const firstEnd = ends[0]
+    if (firstEnd == null) return null
+    return Math.round((firstEnd - sum(byDay.get(days[0]!)!.map((tx) => tx.amount))) * 100) / 100
+  }
+}
+
+export function buildSavingsLedger(transactions: Transaction[], savingsAccounts: string[], from: string, to: string): SavingsLedger | null {
+  const accounts = savingsAccounts.filter((name) => transactions.some((tx) => tx.account === name))
+  if (!accounts.length) return null
+  const lookups = accounts.map((name) => balanceOnFactory(transactions.filter((tx) => tx.account === name)))
+  const balanceOn = (date: string) => {
+    const values = lookups.map((lookup) => lookup(date))
+    return values.some((value) => value == null) ? null : Math.round(sum(values as number[]) * 100) / 100
+  }
+  const rows = transactions.filter((tx) => accounts.includes(tx.account) && tx.date >= from && tx.date <= to)
+  const added = sum(rows.filter((tx) => tx.amount > 0).map((tx) => tx.amount))
+  const withdrawn = -sum(rows.filter((tx) => tx.amount < 0).map((tx) => tx.amount))
+  const opening = balanceOn(addDays(from, -1))
+  const closing = balanceOn(to)
+  const gap = opening != null && closing != null ? opening + added - withdrawn - closing : 0
+  const byMonth: SavingsLedger["byMonth"] = []
+  for (let cursor = monthKey(from); cursor <= monthKey(to); cursor = monthKey(addMonths(`${cursor}-01`, 1))) {
+    const inMonth = rows.filter((tx) => monthKey(tx.date) === cursor)
+    const monthAdded = sum(inMonth.filter((tx) => tx.amount > 0).map((tx) => tx.amount))
+    const monthWithdrawn = -sum(inMonth.filter((tx) => tx.amount < 0).map((tx) => tx.amount))
+    const [y, m] = cursor.split("-").map(Number)
+    const monthEnd = `${cursor}-${String(daysInMonth(y!, m! - 1)).padStart(2, "0")}`
+    byMonth.push({
+      month: cursor,
+      label: labelMonth(cursor),
+      added: monthAdded,
+      withdrawn: monthWithdrawn,
+      net: monthAdded - monthWithdrawn,
+      closing: balanceOn(monthEnd < to ? monthEnd : to),
+    })
+  }
+  return { accounts, from, to, opening, added, withdrawn, closing, mismatch: Math.abs(gap) > 1 ? Math.round(gap * 100) / 100 : null, byMonth }
+}
+
 // ───────────────────────────── Payroll month ─────────────────────────────
 
 export type PayrollShift = { paidOn: string, accruedOn: string, amount: number }
 
 /**
- * Payroll belongs to the month it pays for, not the day the bank books it. When someone is
- * usually paid at month end (day ≥ 25), a payroll booked on days 1–5 (a weekend or holiday
- * pushed it) is moved to the last day of the previous month. Only analysis dates change.
+ * Payroll belongs to the month it pays for, not the day the bank books it. Someone paid at
+ * the turn of the month lives on that money during the next month, so a payroll booked from
+ * day 25 on counts from the 1st of the following month; one booked on days 1–5 (a weekend
+ * pushed it) already sits in its month. Only analysis dates change.
  */
 export function payrollAccrual(transactions: Transaction[]) {
   const payrolls = transactions.filter((tx) => tx.amount > 0 && tx.category === "Nómina")
-  const lateMonth = payrolls.filter((tx) => Number(tx.date.slice(8, 10)) >= 25).length
-  const monthEndPayer = payrolls.length >= 2 && lateMonth / payrolls.length >= 0.5
+  const day = (tx: Transaction) => Number(tx.date.slice(8, 10))
+  const turnOfMonth = payrolls.filter((tx) => day(tx) >= 25 || day(tx) <= 5).length
+  const monthEndPayer = payrolls.length >= 2 && turnOfMonth / payrolls.length >= 0.5
   const shifts: PayrollShift[] = []
   if (!monthEndPayer) return { transactions, shifts }
   for (const tx of payrolls) {
-    if (Number(tx.date.slice(8, 10)) > 5) continue
-    shifts.push({ paidOn: tx.date, accruedOn: addDays(`${tx.date.slice(0, 7)}-01`, -1), amount: tx.amount })
+    if (day(tx) < 25) continue
+    shifts.push({ paidOn: tx.date, accruedOn: addMonths(`${tx.date.slice(0, 7)}-01`, 1), amount: tx.amount })
   }
-  // On payday money is usually moved to savings too: transfers booked that same day belong
-  // to the same month as the payroll they come from.
+  // Only the payroll moves. Savings keep bank dates so they always reconcile with the balance.
   const shiftedDays = new Map(shifts.map((shift) => [shift.paidOn, shift.accruedOn]))
   const accrued = transactions.map((tx) => {
     const accruedOn = shiftedDays.get(tx.date)
-    if (!accruedOn) return tx
-    const isShiftedPayroll = tx.amount > 0 && tx.category === "Nómina"
-    const isTransfer = tx.category === "Traspaso interno" || tx.category === "Ahorro"
-    return isShiftedPayroll || isTransfer ? { ...tx, date: accruedOn } : tx
+    return accruedOn && tx.amount > 0 && tx.category === "Nómina" ? { ...tx, date: accruedOn } : tx
   })
   return { transactions: accrued, shifts }
 }
@@ -1036,6 +1106,10 @@ export function analyze(input: {
   const budgets = buildBudgetStatuses(input.budgets || [], all.months, todayIso)
   const forecast = buildForecast(all.months, recurring, todayIso, accrued)
   const balances = buildBalanceSeries(input.transactions, input.from, input.to)
+  // A period that reaches today also takes movements the bank already booked with a later
+  // date, so the savings closing balance equals the balance the bank shows now.
+  const latest = input.transactions.reduce((max, tx) => (tx.date > max ? tx.date : max), "")
+  const ledgerTo = input.to >= todayIso && latest > input.to ? latest : input.to
   const within = (date: string) => date >= input.from && date <= input.to
   // Shifts that move money into or out of the selected period (both need explaining).
   const payrollShifts = shifts.filter((shift) => within(shift.accruedOn) !== within(shift.paidOn))
@@ -1061,6 +1135,7 @@ export function analyze(input: {
     pace,
     savingsAccounts,
     payrollShifts,
+    savingsLedger: buildSavingsLedger(input.transactions, savingsAccounts, input.from, ledgerTo),
     balances,
     cushion,
     insights: buildInsights(view, recurring, budgets, forecast, cushion, compare),
