@@ -189,6 +189,8 @@ export type Analysis = {
   forecast: Forecast | null
   pace: DailyPace | null
   savingsAccounts: string[]
+  /** Payrolls counted in the month they pay for, not the day they were booked. */
+  payrollShifts: PayrollShift[]
   balances: BalanceSeries
   cushion: Cushion | null
   insights: string[]
@@ -945,6 +947,30 @@ export function buildBalanceSeries(transactions: Transaction[], from: string, to
   return { accounts, points }
 }
 
+// ───────────────────────────── Payroll month ─────────────────────────────
+
+export type PayrollShift = { paidOn: string, accruedOn: string, amount: number }
+
+/**
+ * Payroll belongs to the month it pays for, not the day the bank books it. When someone is
+ * usually paid at month end (day ≥ 25), a payroll booked on days 1–5 (a weekend or holiday
+ * pushed it) is moved to the last day of the previous month. Only analysis dates change.
+ */
+export function payrollAccrual(transactions: Transaction[]) {
+  const payrolls = transactions.filter((tx) => tx.amount > 0 && tx.category === "Nómina")
+  const lateMonth = payrolls.filter((tx) => Number(tx.date.slice(8, 10)) >= 25).length
+  const monthEndPayer = payrolls.length >= 2 && lateMonth / payrolls.length >= 0.5
+  const shifts: PayrollShift[] = []
+  if (!monthEndPayer) return { transactions, shifts }
+  const accrued = transactions.map((tx) => {
+    if (tx.amount <= 0 || tx.category !== "Nómina" || Number(tx.date.slice(8, 10)) > 5) return tx
+    const accruedOn = addDays(`${tx.date.slice(0, 7)}-01`, -1)
+    shifts.push({ paidOn: tx.date, accruedOn, amount: tx.amount })
+    return { ...tx, date: accruedOn }
+  })
+  return { transactions: accrued, shifts }
+}
+
 // ───────────────────────────── Orchestrator ─────────────────────────────
 
 /**
@@ -967,7 +993,9 @@ export function analyze(input: {
   const tickets = input.tickets || []
   const rules = input.rules || []
   const savingsAccounts = input.savingsAccounts ?? detectSavingsAccounts(input.transactions)
-  const inRange = (from: string, to: string) => input.transactions.filter((tx) => tx.date >= from && tx.date <= to)
+  // Month-based figures use the month each payroll pays for; balances and charge rhythms keep bank dates.
+  const { transactions: accrued, shifts } = payrollAccrual(input.transactions)
+  const inRange = (from: string, to: string) => accrued.filter((tx) => tx.date >= from && tx.date <= to)
   const viewOptions = { today: todayIso, rules, savingsAccounts }
 
   const view = buildView(inRange(input.from, input.to), tickets, { ...viewOptions, from: input.from, to: input.to })
@@ -975,12 +1003,15 @@ export function analyze(input: {
   const previousView = buildView(inRange(prev.from, prev.to), tickets, { ...viewOptions, from: prev.from, to: prev.to })
   const compare = comparePeriods(view, previousView, prev)
 
-  const all = aggregate(input.transactions, tickets, sortRules(rules), savingsContext(input.transactions, savingsAccounts))
+  const all = aggregate(accrued, tickets, sortRules(rules), savingsContext(accrued, savingsAccounts))
   const recurring = detectRecurring(input.transactions, todayIso)
-  const pace = buildDailyPace(input.transactions, todayIso)
+  const pace = buildDailyPace(accrued, todayIso)
   const budgets = buildBudgetStatuses(input.budgets || [], all.months, todayIso)
-  const forecast = buildForecast(all.months, recurring, todayIso, input.transactions)
+  const forecast = buildForecast(all.months, recurring, todayIso, accrued)
   const balances = buildBalanceSeries(input.transactions, input.from, input.to)
+  const within = (date: string) => date >= input.from && date <= input.to
+  // Shifts that move money into or out of the selected period (both need explaining).
+  const payrollShifts = shifts.filter((shift) => within(shift.accruedOn) !== within(shift.paidOn))
 
   const accountBalances = accountsFromTransactions(input.transactions).filter((item) => item.balance != null)
   const lastSix = completeMonths(all.months, todayIso).slice(-6)
@@ -1002,6 +1033,7 @@ export function analyze(input: {
     forecast,
     pace,
     savingsAccounts,
+    payrollShifts,
     balances,
     cushion,
     insights: buildInsights(view, recurring, budgets, forecast, cushion, compare),

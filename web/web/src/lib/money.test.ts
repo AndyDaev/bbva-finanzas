@@ -3,6 +3,7 @@ import { csvToRows, parseAmount, parseDate, rowsToTransactions } from "./importF
 import {
   BIZUM_NET,
   buildDailyPace,
+  payrollAccrual,
   cleanName,
   detectSavingsAccounts,
   accountsFromTransactions,
@@ -375,5 +376,35 @@ describe("daily pace", () => {
     expect(pace.today).toBe(10)
     expect(pace.points[9]).toEqual({ day: 10, current: 30, average: 200 })
     expect(pace.points[10]!.current).toBeNull()
+  })
+})
+
+describe("payroll month", () => {
+  const pay = (date: string, amount = 1489.04) => tx(date, amount, "ABONO DE NOMINA POR TRANSFERENCIA // INGRESO POR NÓMINA O PENSIÓN // EMPRESA SL")
+
+  it("counts a month-end payroll pushed to the 2nd in the month it pays for", () => {
+    const data = [pay("2026-08-31"), pay("2026-09-30"), pay("2026-11-02"), tx("2026-10-13", 558, "TRANSFERENCIA RECIBIDA VICTOR")]
+    const { transactions, shifts } = payrollAccrual(data)
+    expect(shifts).toEqual([{ paidOn: "2026-11-02", accruedOn: "2026-10-31", amount: 1489.04 }])
+    expect(transactions[2]!.date).toBe("2026-10-31")
+    expect(data[2]!.date).toBe("2026-11-02")
+
+    const october = analyze({ transactions: data, from: "2026-10-01", to: "2026-10-31", today: "2026-11-20" })
+    expect(october.view.income).toBeCloseTo(1489.04 + 558)
+    expect(october.payrollShifts).toHaveLength(1)
+    const november = analyze({ transactions: data, from: "2026-11-01", to: "2026-11-20", today: "2026-11-20" })
+    expect(november.view.income).toBe(0)
+    expect(november.payrollShifts).toHaveLength(1)
+  })
+
+  it("leaves start-of-month payers alone", () => {
+    const data = [pay("2026-08-01"), pay("2026-09-02"), pay("2026-10-01")]
+    expect(payrollAccrual(data).shifts).toHaveLength(0)
+  })
+
+  it("keeps real dates for balances", () => {
+    const data = [pay("2026-08-31"), pay("2026-09-30"), { ...pay("2026-11-02"), balanceAfter: 3000 }]
+    const result = analyze({ transactions: data, from: "2026-11-01", to: "2026-11-30", today: "2026-11-20" })
+    expect(result.balances.points.at(-1)).toMatchObject({ month: "2026-11", total: 3000 })
   })
 })
