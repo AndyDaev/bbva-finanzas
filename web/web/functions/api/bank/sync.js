@@ -8,6 +8,7 @@ import {
   mapBankTransaction,
   matchExistingAccount,
   planBankUpsert,
+  EXCEL_BOOKING_LAG_DAYS,
 } from "../../_lib/enablebanking.js"
 
 // Each request does a bounded amount of work (Workers CPU/subrequest limits); the client
@@ -16,6 +17,10 @@ const PAGES_PER_STEP = 4
 const FIRST_SYNC_DAYS = 730
 const OVERLAP_DAYS = 10
 const FALLBACK_DAYS = 89
+
+function daysBefore(iso, days) {
+  return new Date(Date.parse(`${iso}T12:00:00Z`) - days * 86400000).toISOString().slice(0, 10)
+}
 
 function daysAgo(days) {
   return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
@@ -62,8 +67,9 @@ async function writeRows(db, account, rows, now) {
   if (!rows.length) return { inserted: 0, updated: 0, skipped: 0 }
   const dates = rows.map((row) => row.date).sort()
   const existing = await db
-    .prepare(`SELECT id, date, amount FROM transactions WHERE account = ? AND date BETWEEN ? AND ?`)
-    .bind(account.accountName, dates[0], dates[dates.length - 1])
+    .prepare(`SELECT id, date, amount, text FROM transactions WHERE account = ? AND date BETWEEN ? AND ?`)
+    // Look a few days earlier too: Excel rows carry the purchase date, the bank the booking date.
+    .bind(account.accountName, daysBefore(dates[0], EXCEL_BOOKING_LAG_DAYS), dates[dates.length - 1])
     .all()
   const plan = planBankUpsert(existing.results || [], rows)
   const statements = []
@@ -173,7 +179,8 @@ export async function onRequestPost(context) {
       stats.updated += written.updated
       stats.skipped += written.skipped
       if (!key) {
-        if (!session.lastSyncAt) await backfillBalances(env, db, account, request)
+        // The API sends no balance per movement: fill the missing ones on every sync.
+        await backfillBalances(env, db, account, request)
         stats.accounts += 1
         accountDone = true
       }

@@ -123,3 +123,28 @@ describe("planBankUpsert", () => {
     expect(plan.updates.map((r) => r.id)).toEqual(["eb_known"])
   })
 })
+
+describe("planBankUpsert never duplicates", () => {
+  const row = (id, date, amount, text) => ({ id, date, amount, text })
+
+  it("updates the stored row when the same movement arrives under a new bank id", () => {
+    const existing = [row("eb_old1", "2026-11-20", -7.3, "PAGO // WOK TWO"), row("eb_old2", "2026-11-20", -7.3, "PAGO // WOK TWO")]
+    const incoming = [row("eb_new1", "2026-11-20", -7.3, "PAGO // WOK TWO"), row("eb_new2", "2026-11-20", -7.3, "PAGO // WOK TWO"), row("eb_new3", "2026-11-21", -1, "OTRO")]
+    const plan = planBankUpsert(existing, incoming)
+    expect(plan.updates.map((r) => r.id).sort()).toEqual(["eb_old1", "eb_old2"])
+    expect(plan.inserts.map((r) => r.id)).toEqual(["eb_new3"])
+  })
+
+  it("matches an Excel purchase booked by the bank a few days later", () => {
+    const existing = [row("tx_excel", "2026-11-13", -2.1, "Supermercados cool expres · Pago con tarjeta")]
+    const plan = planBankUpsert(existing, [row("eb_a", "2026-11-16", -2.1, "PAGO // SUPERMERCADOS COOL EXPRES"), row("eb_b", "2026-11-16", -2.1, "PAGO // SUPERMERCADOS COOL EXPRES")])
+    expect(plan.skipped).toBe(1)
+    expect(plan.inserts.map((r) => r.id)).toEqual(["eb_b"])
+  })
+
+  it("does not match an Excel row booked after the bank date or too far away", () => {
+    const existing = [row("tx_late", "2026-11-18", -5, "x"), row("tx_far", "2026-11-01", -5, "x")]
+    const plan = planBankUpsert(existing, [row("eb_a", "2026-11-16", -5, "y")])
+    expect(plan.inserts).toHaveLength(1)
+  })
+})

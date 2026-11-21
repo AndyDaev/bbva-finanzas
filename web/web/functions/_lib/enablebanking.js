@@ -242,30 +242,57 @@ export function backfillBalances(rows, booked) {
   return rows
 }
 
+/** A card purchase can be booked by the bank a few days after the date the Excel shows. */
+export const EXCEL_BOOKING_LAG_DAYS = 4
+
+const contentKey = (row) => `${row.date}|${Number(row.amount).toFixed(2)}|${String(row.text || "").trim().toLowerCase()}`
+const daysApart = (a, b) => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000)
+
 /**
- * Decides what to write. Rows already imported from a CSV/Excel (same account, date and
- * amount, non-bank id) are skipped so the two sources never duplicate each other.
+ * Decides what to write, never duplicating a movement already stored:
+ *  1. same id → update;
+ *  2. same date, amount and text under another bank id (ids changed between versions) →
+ *     update that stored row instead of inserting a copy;
+ *  3. already imported from Excel (same amount, same day or booked up to 4 days later) → skip.
+ * `existing` rows need id, date, amount and text.
  */
 export function planBankUpsert(existing, incoming) {
   const byId = new Map(existing.map((row) => [row.id, row]))
-  const csvSlots = new Map()
+  const incomingIds = new Set(incoming.map((row) => row.id))
+  const bankByContent = new Map()
+  const excel = []
   for (const row of existing) {
-    if (String(row.id).startsWith("eb_")) continue
-    const key = `${row.date}|${Number(row.amount).toFixed(2)}`
-    csvSlots.set(key, (csvSlots.get(key) || 0) + 1)
+    if (String(row.id).startsWith("eb_")) {
+      const key = contentKey(row)
+      bankByContent.set(key, [...(bankByContent.get(key) || []), row.id])
+    } else {
+      excel.push({ date: row.date, amount: Number(row.amount), used: false })
+    }
   }
+  excel.sort((a, b) => a.date.localeCompare(b.date))
+
+  const claimed = new Set()
   const inserts = []
   const updates = []
   let skipped = 0
   for (const row of incoming) {
-    if (byId.has(row.id)) {
+    if (byId.has(row.id) && !claimed.has(row.id)) {
+      claimed.add(row.id)
       updates.push(row)
       continue
     }
-    const key = `${row.date}|${row.amount.toFixed(2)}`
-    const free = csvSlots.get(key) || 0
-    if (free > 0) {
-      csvSlots.set(key, free - 1)
+    const older = (bankByContent.get(contentKey(row)) || []).find((id) => !claimed.has(id) && !incomingIds.has(id))
+    if (older) {
+      claimed.add(older)
+      updates.push({ ...row, id: older })
+      continue
+    }
+    const sameAmount = (item) => !item.used && Math.abs(item.amount - row.amount) < 0.005
+    const twin =
+      excel.find((item) => sameAmount(item) && item.date === row.date) ||
+      excel.find((item) => sameAmount(item) && item.date < row.date && daysApart(item.date, row.date) <= EXCEL_BOOKING_LAG_DAYS)
+    if (twin) {
+      twin.used = true
       skipped += 1
       continue
     }
