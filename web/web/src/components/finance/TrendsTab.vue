@@ -52,9 +52,22 @@ const stackTooltip = (m: MonthPoint) => {
 // A rate over a near-empty income month is meaningless (−80.000 %): skip those, and floor at −100 %.
 const MIN_INCOME = 100
 const rateData = computed(() => months.value.filter((m) => m.savingsRate != null && m.income >= MIN_INCOME))
-const rateY = (m: MonthPoint) => Math.max(-100, (m.savingsRate ?? 0) * 100)
+const clampRate = (value: number) => Math.max(-100, value * 100)
+// Two rates, same as the KPI card: share of income moved to savings, and share not spent.
+const savedRate = (m: MonthPoint) => (m.income > 0 ? m.savings / m.income : 0)
+const rateSeries = [
+  { key: "saved", label: "Al ahorro", color: "var(--series-savings)", y: (m: MonthPoint) => clampRate(savedRate(m)) },
+  { key: "unspent", label: "Sin gastar", color: "var(--series-income)", y: (m: MonthPoint) => clampRate(m.savingsRate ?? 0) },
+] as const
+const rateY = rateSeries.map((s) => s.y)
 const rateTooltip = (m: MonthPoint) =>
-  `<div class="viz-tip"><strong>${m.label}</strong><div>Tasa de ahorro<b>${Math.round((m.savingsRate ?? 0) * 100)} %</b></div><div>Ingresos<b>${euro.format(m.income)}</b></div><div>Gastos<b>${euro.format(m.expense)}</b></div></div>`
+  `<div class="viz-tip"><strong>${m.label}</strong>${rateSeries
+    .map((s) => `<div><i style="background:${s.color}"></i>${s.label}<b>${Math.round(s.y(m))} %</b></div>`)
+    .join("")}<div>Ingresos<b>${euro.format(m.income)}</b></div><div>Gastos<b>${euro.format(m.expense)}</b></div><div>Al ahorro<b>${euro.format(m.savings)}</b></div></div>`
+const avgSavedRate = computed(() => {
+  const list = rateData.value
+  return list.length ? list.reduce((sum, m) => sum + Math.max(-1, savedRate(m)), 0) / list.length : null
+})
 const avgRate = computed(() => {
   const list = rateData.value
   return list.length ? list.reduce((sum, m) => sum + Math.max(-1, m.savingsRate ?? 0), 0) / list.length : null
@@ -150,18 +163,23 @@ function cellTone(value: number, average: number) {
       <CardHeader>
         <CardTitle>Tasa de ahorro mensual</CardTitle>
         <CardDescription>
-          (Ingresos − gastos) ÷ ingresos
-          <template v-if="avgRate != null"> · media {{ Math.round(avgRate * 100) }} %</template>
+          Qué parte de lo que cobras va al ahorro y qué parte no gastas
+          <template v-if="avgSavedRate != null && avgRate != null"> · medias {{ Math.round(avgSavedRate * 100) }} % y {{ Math.round(avgRate * 100) }} %</template>
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent class="space-y-3">
+        <ul class="flex flex-wrap gap-4 text-xs text-muted-foreground">
+          <li v-for="s in rateSeries" :key="s.key" class="flex items-center gap-1.5">
+            <span class="h-0.5 w-4 rounded" :style="{ background: s.color }" />{{ s.label }}
+          </li>
+        </ul>
         <div v-if="rateData.length >= 2" class="h-[220px] w-full">
           <VisXYContainer :data="rateData" :height="220" :padding="{ top: 12, bottom: 4 }">
-            <VisLine :x="x" :y="rateY" color="var(--series-savings)" :line-width="2" />
-            <VisScatter :x="x" :y="rateY" color="var(--series-savings)" :size="8" stroke-color="var(--card)" :stroke-width="2" />
+            <VisLine :x="x" :y="rateY" :color="rateSeries.map((s) => s.color)" :line-width="2" />
+            <VisScatter v-for="s in rateSeries" :key="s.key" :x="x" :y="s.y" :color="s.color" :size="8" stroke-color="var(--card)" :stroke-width="2" />
             <VisAxis type="x" :tick-format="monthTick" :tick-line="false" :domain-line="false" :grid-line="false" :num-ticks="rateData.length" />
             <VisAxis type="y" :num-ticks="4" :tick-line="false" :domain-line="false" :tick-format="(v: number) => `${Math.round(v)} %`" />
-            <VisCrosshair :template="rateTooltip" color="var(--series-savings)" />
+            <VisCrosshair :template="rateTooltip" :color="rateSeries.map((s) => s.color)" />
             <VisTooltip />
           </VisXYContainer>
         </div>
