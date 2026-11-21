@@ -39,7 +39,7 @@ async function saveName() {
         <CardDescription>
           <template v-if="!bank.configured">Sincronización automática de solo lectura vía Enable Banking (sin configurar).</template>
           <template v-else-if="activeBankSession">
-            Solo lectura · el permiso caduca en {{ daysLeft }} días · última sincronización {{ lastSync(activeBankSession.lastSyncAt) }}
+            Solo lectura · el permiso caduca en {{ daysLeft }} días · última sincronización {{ lastSync(activeBankSession.lastSyncAt) }} · se actualiza sola al abrir la app (cada 6 h)
           </template>
           <template v-else>Trae tus movimientos y saldos sin exportar el Excel. Solo lectura: no se puede mover dinero.</template>
         </CardDescription>

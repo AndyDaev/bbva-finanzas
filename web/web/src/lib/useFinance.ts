@@ -262,7 +262,8 @@ async function init() {
     applyData((await migrateLocalIfNeeded(cache)) || (await fetchData()))
     offline.value = false
     if (new URLSearchParams(window.location.search).has("bank")) await handleBankReturn()
-    else void loadBank()
+    else void loadBankAndAutoSync()
+    watchForeground()
   } catch (error) {
     offline.value = true
     flash(isUnauthorized(error) ? "Sesión caducada. Vuelve a entrar." : "Sin conexión: mostrando la última copia local.")
@@ -294,25 +295,62 @@ async function connectBank() {
   }
 }
 
-async function syncBank() {
+/**
+ * Syncs with the bank. `quiet` (automatic sync) shows no progress and only speaks up when
+ * new movements arrived or something needs the user's attention.
+ */
+async function syncBank(options: { quiet?: boolean } = {}) {
+  if (bankBusy.value) return
   bankBusy.value = true
   try {
     const result = await bankSync((stats) => {
-      notice.value = `Sincronizando con BBVA… ${stats.inserted + stats.updated + stats.skipped} movimientos leídos`
+      if (!options.quiet) notice.value = `Sincronizando con BBVA… ${stats.inserted + stats.updated + stats.skipped} movimientos leídos`
     })
     applyData(result.data)
     bank.value = { ...bank.value, sessions: result.sessions }
     offline.value = false
     const { inserted, skipped } = result.stats
+    if (options.quiet) {
+      if (result.errors.length) flash(`BBVA: ${result.errors[0]!.message}`)
+      else if (inserted) flash(`${inserted} ${inserted === 1 ? "movimiento nuevo" : "movimientos nuevos"} de BBVA.`)
+      return
+    }
     const parts = [`${inserted} movimientos nuevos`]
     if (skipped) parts.push(`${skipped} ya estaban importados del Excel`)
     flash(result.errors.length ? `${parts.join(" · ")}. Aviso: ${result.errors[0]!.message}` : `Banco sincronizado: ${parts.join(" · ")}.`)
   } catch (error) {
     if (isUnauthorized(error)) return handleUnauthorized()
-    flash(error instanceof Error ? error.message : "No se pudo sincronizar con el banco.")
+    if (!options.quiet) flash(error instanceof Error ? error.message : "No se pudo sincronizar con el banco.")
   } finally {
     bankBusy.value = false
   }
+}
+
+/** Automatic sync: when the app opens or comes back, if the last sync is older than this. */
+const AUTO_SYNC_AFTER_MS = 6 * 60 * 60 * 1000
+
+async function autoSyncIfStale() {
+  const session = activeBankSession.value
+  if (!authed.value || !bank.value.configured || !session || bankBusy.value) return
+  const last = session.lastSyncAt ? Date.parse(session.lastSyncAt) : 0
+  if (Date.now() - last < AUTO_SYNC_AFTER_MS) return
+  await syncBank({ quiet: true })
+}
+
+async function loadBankAndAutoSync() {
+  await loadBank()
+  await autoSyncIfStale()
+}
+
+let watchingForeground = false
+
+/** An installed app often stays open for days: check again whenever it comes back to the front. */
+function watchForeground() {
+  if (watchingForeground || typeof document === "undefined") return
+  watchingForeground = true
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void loadBankAndAutoSync()
+  })
 }
 
 async function renameBankAccount(sessionId: string, uid: string, accountName: string) {
@@ -360,7 +398,8 @@ async function doLogin(password: string) {
   authed.value = true
   applyData((await migrateLocalIfNeeded(loadCache())) || (await fetchData()))
   flash("Sesión iniciada.")
-  void loadBank()
+  void loadBankAndAutoSync()
+  watchForeground()
 }
 
 async function doLogout() {
