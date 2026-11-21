@@ -54,7 +54,10 @@ const shortMonth = (label: string) => label.replace(/ de \d{4}$/, "")
           </thead>
           <tbody class="divide-y divide-dashed divide-white/10">
             <tr v-for="row in ledger.byMonth" :key="row.month">
-              <td class="py-2 pr-3 capitalize">{{ shortMonth(row.label) }}</td>
+              <td class="py-2 pr-3">
+                <span class="block capitalize">{{ shortMonth(row.label) }}</span>
+                <span v-if="analysis.cycle.active" class="block text-xs whitespace-nowrap text-muted-foreground">{{ formatDay(row.from).slice(0, 5) }} – {{ formatDay(row.to).slice(0, 5) }}</span>
+              </td>
               <td class="py-2 pr-3">
                 <div class="flex flex-col gap-1">
                   <div class="flex items-center gap-2">

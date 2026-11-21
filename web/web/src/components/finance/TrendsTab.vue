@@ -17,7 +17,8 @@ const flowSeries = [
   { key: "expense", label: "Gastos", color: "var(--series-expense)" },
   { key: "savings", label: "A ahorro", color: "var(--series-savings)" },
 ] as const
-const flowY = flowSeries.map((s) => (d: MonthPoint) => Math.max(0, d[s.key]))
+// Negative savings (more taken out than put in) are drawn below zero, not hidden.
+const flowY = flowSeries.map((s) => (d: MonthPoint) => (s.key === "savings" ? d[s.key] : Math.max(0, d[s.key])))
 const flowTooltip = (d: MonthPoint) =>
   `<div class="viz-tip"><strong>${d.label}</strong>${flowSeries
     .map((s) => `<div><i style="background:${s.color}"></i>${s.label}<b>${euro.format(d[s.key])}</b></div>`)

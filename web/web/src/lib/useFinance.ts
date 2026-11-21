@@ -125,7 +125,11 @@ const analysis = computed(() =>
   }),
 )
 const view = computed(() => analysis.value.view)
-const periodTx = computed(() => accountTx.value.filter((tx) => tx.date >= from.value && tx.date <= to.value))
+// The movements list covers the same real dates as the figures (a pay cycle, not 1st–31st).
+const periodTx = computed(() => {
+  const { from: start, to: end } = analysis.value.cycle
+  return accountTx.value.filter((tx) => tx.date >= start && tx.date <= end)
+})
 const filtered = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase("es")
   return periodTx.value.filter((tx) => {

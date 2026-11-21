@@ -7,6 +7,8 @@ export type Transaction = {
   categoryLocked?: boolean
   account: string
   balanceAfter?: number
+  /** Bank date, when analysis moved `date` to the pay-cycle calendar. */
+  realDate?: string
 }
 
 export type Budget = {

@@ -21,6 +21,7 @@ import {
   monthKey,
   shortMonth,
 } from "./format"
+import { buildCycleCalendar } from "./cycles"
 import { accountsFromTransactions, endOfDayBalance, type Budget, type Transaction } from "./ids"
 
 // ───────────────────────────── Types ─────────────────────────────
@@ -195,7 +196,7 @@ export type SavingsLedger = {
   closing: number | null
   /** Difference when the movements do not explain the balances (missing data), else null. */
   mismatch: number | null
-  byMonth: Array<{ month: string, label: string, added: number, withdrawn: number, net: number, closing: number | null }>
+  byMonth: Array<{ month: string, label: string, from: string, to: string, added: number, withdrawn: number, net: number, closing: number | null }>
 }
 
 export type Analysis = {
@@ -206,8 +207,8 @@ export type Analysis = {
   forecast: Forecast | null
   pace: DailyPace | null
   savingsAccounts: string[]
-  /** Payrolls counted in the month they pay for, not the day they were booked. */
-  payrollShifts: PayrollShift[]
+  /** Months are pay cycles (payday → day before next payday) when the payroll pattern allows. */
+  cycle: { active: boolean, from: string, to: string, periods: Array<{ label: string, from: string, to: string }> }
   savingsLedger: SavingsLedger | null
   balances: BalanceSeries
   cushion: Cushion | null
@@ -514,7 +515,7 @@ export function buildView(
       amount: Math.abs(tx.amount),
       share: share(Math.abs(tx.amount), expense),
       category: tx.category,
-      date: tx.date,
+      date: tx.realDate ?? tx.date,
       kind: describeMerchant(cleanName(tx.text), tx.category),
     }))
 
@@ -1005,7 +1006,14 @@ function balanceOnFactory(rows: Transaction[]) {
   }
 }
 
-export function buildSavingsLedger(transactions: Transaction[], savingsAccounts: string[], from: string, to: string): SavingsLedger | null {
+export function buildSavingsLedger(
+  transactions: Transaction[],
+  savingsAccounts: string[],
+  periods: Array<{ label: string, from: string, to: string }>,
+): SavingsLedger | null {
+  if (!periods.length) return null
+  const from = periods[0]!.from
+  const to = periods[periods.length - 1]!.to
   const accounts = savingsAccounts.filter((name) => transactions.some((tx) => tx.account === name))
   if (!accounts.length) return null
   const lookups = accounts.map((name) => balanceOnFactory(transactions.filter((tx) => tx.account === name)))
@@ -1019,53 +1027,22 @@ export function buildSavingsLedger(transactions: Transaction[], savingsAccounts:
   const opening = balanceOn(addDays(from, -1))
   const closing = balanceOn(to)
   const gap = opening != null && closing != null ? opening + added - withdrawn - closing : 0
-  const byMonth: SavingsLedger["byMonth"] = []
-  for (let cursor = monthKey(from); cursor <= monthKey(to); cursor = monthKey(addMonths(`${cursor}-01`, 1))) {
-    const inMonth = rows.filter((tx) => monthKey(tx.date) === cursor)
-    const monthAdded = sum(inMonth.filter((tx) => tx.amount > 0).map((tx) => tx.amount))
-    const monthWithdrawn = -sum(inMonth.filter((tx) => tx.amount < 0).map((tx) => tx.amount))
-    const [y, m] = cursor.split("-").map(Number)
-    const monthEnd = `${cursor}-${String(daysInMonth(y!, m! - 1)).padStart(2, "0")}`
-    byMonth.push({
-      month: cursor,
-      label: labelMonth(cursor),
-      added: monthAdded,
-      withdrawn: monthWithdrawn,
-      net: monthAdded - monthWithdrawn,
-      closing: balanceOn(monthEnd < to ? monthEnd : to),
-    })
-  }
-  return { accounts, from, to, opening, added, withdrawn, closing, mismatch: Math.abs(gap) > 1 ? Math.round(gap * 100) / 100 : null, byMonth }
-}
-
-// ───────────────────────────── Payroll month ─────────────────────────────
-
-export type PayrollShift = { paidOn: string, accruedOn: string, amount: number }
-
-/**
- * Payroll belongs to the month it pays for, not the day the bank books it. Someone paid at
- * the turn of the month lives on that money during the next month, so a payroll booked from
- * day 25 on counts from the 1st of the following month; one booked on days 1–5 (a weekend
- * pushed it) already sits in its month. Only analysis dates change.
- */
-export function payrollAccrual(transactions: Transaction[]) {
-  const payrolls = transactions.filter((tx) => tx.amount > 0 && tx.category === "Nómina")
-  const day = (tx: Transaction) => Number(tx.date.slice(8, 10))
-  const turnOfMonth = payrolls.filter((tx) => day(tx) >= 25 || day(tx) <= 5).length
-  const monthEndPayer = payrolls.length >= 2 && turnOfMonth / payrolls.length >= 0.5
-  const shifts: PayrollShift[] = []
-  if (!monthEndPayer) return { transactions, shifts }
-  for (const tx of payrolls) {
-    if (day(tx) < 25) continue
-    shifts.push({ paidOn: tx.date, accruedOn: addMonths(`${tx.date.slice(0, 7)}-01`, 1), amount: tx.amount })
-  }
-  // Only the payroll moves. Savings keep bank dates so they always reconcile with the balance.
-  const shiftedDays = new Map(shifts.map((shift) => [shift.paidOn, shift.accruedOn]))
-  const accrued = transactions.map((tx) => {
-    const accruedOn = shiftedDays.get(tx.date)
-    return accruedOn && tx.amount > 0 && tx.category === "Nómina" ? { ...tx, date: accruedOn } : tx
+  const byMonth: SavingsLedger["byMonth"] = periods.map((period) => {
+    const inPeriod = rows.filter((tx) => tx.date >= period.from && tx.date <= period.to)
+    const periodAdded = sum(inPeriod.filter((tx) => tx.amount > 0).map((tx) => tx.amount))
+    const periodWithdrawn = -sum(inPeriod.filter((tx) => tx.amount < 0).map((tx) => tx.amount))
+    return {
+      month: period.label,
+      label: labelMonth(period.label),
+      from: period.from,
+      to: period.to,
+      added: periodAdded,
+      withdrawn: periodWithdrawn,
+      net: periodAdded - periodWithdrawn,
+      closing: balanceOn(period.to),
+    }
   })
-  return { transactions: accrued, shifts }
+  return { accounts, from, to, opening, added, withdrawn, closing, mismatch: Math.abs(gap) > 1 ? Math.round(gap * 100) / 100 : null, byMonth }
 }
 
 // ───────────────────────────── Orchestrator ─────────────────────────────
@@ -1090,32 +1067,52 @@ export function analyze(input: {
   const tickets = input.tickets || []
   const rules = input.rules || []
   const savingsAccounts = input.savingsAccounts ?? detectSavingsAccounts(input.transactions)
-  // Month-based figures use the month each payroll pays for; balances and charge rhythms keep bank dates.
-  const { transactions: accrued, shifts } = payrollAccrual(input.transactions)
-  const inRange = (from: string, to: string) => accrued.filter((tx) => tx.date >= from && tx.date <= to)
-  const viewOptions = { today: todayIso, rules, savingsAccounts }
+  // Month-based figures run on pay cycles (see cycles.ts) through a synthetic calendar;
+  // recurring charges, balances and the savings ledger keep bank dates.
+  const calendar = buildCycleCalendar(input.transactions)
+  const cycled = calendar.active
+    ? input.transactions.map((tx) => {
+      const date = calendar.toSynthetic(tx.date)
+      return date === tx.date ? tx : { ...tx, date, realDate: tx.date }
+    })
+    : input.transactions
+  const today = calendar.toSynthetic(todayIso)
+  // Presets start on day 1 (= the start of that month's cycle); custom dates are translated.
+  const from = calendar.active && !input.from.endsWith("-01") ? calendar.toSynthetic(input.from) : input.from
+  // A range ending on a month's last day means "until the end of that month's cycle".
+  const [toYear, toMonth] = input.to.split("-").map(Number)
+  const endsMonth = Number(input.to.slice(8, 10)) === daysInMonth(toYear!, toMonth! - 1) && input.to < todayIso
+  const latestBooked = input.transactions.reduce((max, tx) => (tx.date > max ? tx.date : max), "")
+  let to = calendar.active && endsMonth ? input.to : calendar.toSynthetic(input.to)
+  // Up to today also means movements the bank already booked with a later date (so every
+  // figure matches the balance the bank shows now).
+  if (input.to >= todayIso && latestBooked > input.to) {
+    const latestSynthetic = calendar.toSynthetic(latestBooked)
+    if (latestSynthetic > to) to = latestSynthetic
+  }
+  const inRange = (start: string, end: string) => cycled.filter((tx) => tx.date >= start && tx.date <= end)
+  const viewOptions = { today, rules, savingsAccounts }
 
-  const view = buildView(inRange(input.from, input.to), tickets, { ...viewOptions, from: input.from, to: input.to })
-  const prev = previousRange(input.from, input.to)
-  const previousView = buildView(inRange(prev.from, prev.to), tickets, { ...viewOptions, from: prev.from, to: prev.to })
-  const compare = comparePeriods(view, previousView, prev)
+  const view = buildView(inRange(from, to), tickets, { ...viewOptions, from: calendar.toReal(from), to: calendar.toReal(to) })
+  const prev = previousRange(from, to)
+  const previousView = buildView(inRange(prev.from, prev.to), tickets, { ...viewOptions, from: calendar.toReal(prev.from), to: calendar.toReal(prev.to) })
+  const compare = comparePeriods(view, previousView, { from: calendar.toReal(prev.from), to: calendar.toReal(prev.to) })
 
-  const all = aggregate(accrued, tickets, sortRules(rules), savingsContext(accrued, savingsAccounts))
+  const all = aggregate(cycled, tickets, sortRules(rules), savingsContext(cycled, savingsAccounts))
   const recurring = detectRecurring(input.transactions, todayIso)
-  const pace = buildDailyPace(accrued, todayIso)
-  const budgets = buildBudgetStatuses(input.budgets || [], all.months, todayIso)
-  const forecast = buildForecast(all.months, recurring, todayIso, accrued)
-  const balances = buildBalanceSeries(input.transactions, input.from, input.to)
-  // A period that reaches today also takes movements the bank already booked with a later
-  // date, so the savings closing balance equals the balance the bank shows now.
-  const latest = input.transactions.reduce((max, tx) => (tx.date > max ? tx.date : max), "")
-  const ledgerTo = input.to >= todayIso && latest > input.to ? latest : input.to
-  const within = (date: string) => date >= input.from && date <= input.to
-  // Shifts that move money into or out of the selected period (both need explaining).
-  const payrollShifts = shifts.filter((shift) => within(shift.accruedOn) !== within(shift.paidOn))
+  const pace = buildDailyPace(cycled, today)
+  const budgets = buildBudgetStatuses(input.budgets || [], all.months, today)
+  const forecast = buildForecast(all.months, recurring, today, cycled)
+  const periods = calendar.periods(from, to)
+  const realFrom = periods[0]?.from ?? input.from
+  const realTo = periods[periods.length - 1]?.to ?? input.to
+  const balances = buildBalanceSeries(input.transactions, realFrom, realTo)
+  // Same rule for the real-date ledger: include movements already booked with a later date.
+  const lastPeriod = periods[periods.length - 1]
+  if (lastPeriod && input.to >= todayIso && latestBooked > lastPeriod.to) lastPeriod.to = latestBooked
 
   const accountBalances = accountsFromTransactions(input.transactions).filter((item) => item.balance != null)
-  const lastSix = completeMonths(all.months, todayIso).slice(-6)
+  const lastSix = completeMonths(all.months, today).slice(-6)
   const avgMonthly = lastSix.length ? sum(lastSix.map(([, agg]) => agg.expense)) / lastSix.length : 0
   const totalBalance = sum(accountBalances.map((item) => item.balance!))
   const cushion = accountBalances.length && avgMonthly > 0
@@ -1134,8 +1131,8 @@ export function analyze(input: {
     forecast,
     pace,
     savingsAccounts,
-    payrollShifts,
-    savingsLedger: buildSavingsLedger(input.transactions, savingsAccounts, input.from, ledgerTo),
+    cycle: { active: calendar.active, from: realFrom, to: lastPeriod?.to ?? realTo, periods },
+    savingsLedger: buildSavingsLedger(input.transactions, savingsAccounts, periods),
     balances,
     cushion,
     insights: buildInsights(view, recurring, budgets, forecast, cushion, compare),

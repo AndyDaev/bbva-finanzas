@@ -11,12 +11,14 @@ const money = (value: number) => euroWhole.format(value)
 const percent = (value: number) => `${Math.round(value)} %`
 
 /** Explains payrolls counted in the month they pay for rather than the booking day. */
-const payrollNotes = computed(() =>
-  analysis.value.payrollShifts.map((shift) => {
-    const month = labelMonth(shift.accruedOn.slice(0, 7)).replace(/ de \d{4}$/, "")
-    return `La nómina abonada el ${formatDay(shift.paidOn)} cuenta en ${month}`
-  }),
-)
+/** When months are pay cycles, say which real dates the current one covers. */
+const cycleNote = computed(() => {
+  const { cycle } = analysis.value
+  const last = cycle.active ? cycle.periods[cycle.periods.length - 1] : null
+  if (!last) return null
+  const month = labelMonth(last.label).replace(/ de \d{4}$/, "")
+  return `Meses por ciclo de nómina · ${month}: ${formatDay(last.from)} – ${formatDay(last.to)}`
+})
 
 const cards = computed(() => {
   const { view, compare } = analysis.value
@@ -70,7 +72,6 @@ const cards = computed(() => {
       </CardHeader>
       <CardContent class="space-y-1 text-xs text-muted-foreground">
         <p class="truncate">{{ card.note }}</p>
-        <p v-for="shift in card.label === 'Ingresos' ? payrollNotes : []" :key="shift" class="text-brand-soft/80">{{ shift }}</p>
         <p v-if="card.delta">
           <DeltaNote :delta="card.delta.delta" :pct="card.delta.pct" :up-is-good="card.delta.upIsGood" :points="card.delta.points" />
           <span class="ml-1">vs anterior</span>
@@ -78,5 +79,9 @@ const cards = computed(() => {
       </CardContent>
     </Card>
   </section>
-  <p v-if="analysis.compare" class="mono-label -mt-3">Comparado con {{ analysis.compare.label }}</p>
+  <p v-if="analysis.compare || cycleNote" class="mono-label -mt-3 leading-relaxed">
+    <template v-if="cycleNote">{{ cycleNote }}</template>
+    <template v-if="cycleNote && analysis.compare"> · </template>
+    <template v-if="analysis.compare">comparado con {{ analysis.compare.label }}</template>
+  </p>
 </template>
