@@ -57,14 +57,39 @@ describe("App renders every tab with data", () => {
     })
   }
 
-  it("summary shows forecast, recurring and cushion", async () => {
+  it("summary folds secondary sections, with a one-line summary", async () => {
     const html = await renderTab("resumen")
+    expect(html).toContain("Hoy · hasta tu nómina")
+    expect(html).toContain("En qué gastas")
+    expect(html).toContain("Fijos")
+    expect(html).toMatch(/\d+ suscripciones · /)
+    expect(html).not.toContain("Servicios que eliges")
+  })
+
+  it("summary shows forecast, recurring and cushion once unfolded", async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => (key.startsWith("finanzas:fold:") ? "1" : storage.get(key) ?? null),
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    })
+    const html = await renderTab("resumen")
+    vi.unstubAllGlobals()
     expect(html).toContain("Suscripciones")
     expect(html).toContain("Recibos")
     expect(html).toContain("Netflix")
     expect(html).toContain("Ritmo de gasto")
     expect(html).toContain("En qué gastas")
     expect(html.toLowerCase()).toContain("colchón")
+  })
+
+  it("privacy mode hides every amount", async () => {
+    const finance = useFinance()
+    finance.privacyMode.value = true
+    const html = await renderTab("movimientos")
+    finance.privacyMode.value = false
+    expect(html).toContain("•••• €")
+    expect(html).not.toMatch(/\d+,\d{2}\s€/)
   })
 
   it("trends, tickets and rules tabs render on their own", async () => {

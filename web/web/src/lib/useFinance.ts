@@ -15,6 +15,7 @@ import {
   chatGptPrompt,
   isoDate,
   normalizeTransactions,
+  privacyMode,
   replaceAccountTransactions,
   ruleMatches,
   sortRules,
@@ -115,6 +116,30 @@ const suggestion = ref<RuleSuggestion | null>(null)
 const bank = ref<{ configured: boolean, sessions: BankSession[], loaded: boolean }>({ configured: false, sessions: [], loaded: false })
 const bankBusy = ref(false)
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
+/** Ticks every minute so "hace X min" labels stay fresh. */
+const now = ref(Date.now())
+if (typeof window !== "undefined") setInterval(() => { now.value = Date.now() }, 60_000)
+
+// ───── Privacy mode (hide amounts), remembered per device ─────
+
+const PRIVACY_KEY = "finanzas:privacy"
+function setPrivacy(on: boolean) {
+  privacyMode.value = on
+  try {
+    localStorage.setItem(PRIVACY_KEY, on ? "1" : "0")
+  } catch {
+    // storage blocked: the mode just is not remembered
+  }
+  if (typeof document !== "undefined") document.documentElement.classList.toggle("privacy", on)
+}
+function togglePrivacy() {
+  setPrivacy(!privacyMode.value)
+}
+try {
+  if (typeof localStorage !== "undefined" && localStorage.getItem(PRIVACY_KEY) === "1") setPrivacy(true)
+} catch {
+  // ignore
+}
 
 // ───── Derived data ─────
 
@@ -176,6 +201,18 @@ const categoryColors = computed(() => {
   const top = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, SERIES_SLOTS).map(([name]) => name)
   const map = new Map(top.map((name, index) => [name, `var(--series-${index + 1})`]))
   return { top, color: (name: string) => map.get(name) || "var(--series-other)" }
+})
+/** "hace 12 min" since the last bank sync (null without a bank connection). */
+const lastSyncLabel = computed(() => {
+  const last = bank.value.sessions.map((s) => s.lastSyncAt).filter(Boolean).sort().pop()
+  if (!last) return null
+  const minutes = Math.max(0, Math.round((now.value - Date.parse(last)) / 60_000))
+  if (minutes < 1) return "ahora mismo"
+  if (minutes < 60) return `hace ${minutes} min`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `hace ${hours} h`
+  const days = Math.round(hours / 24)
+  return `hace ${days} ${days === 1 ? "día" : "días"}`
 })
 const updatedLabel = computed(() => {
   if (!updatedAt.value) return null
@@ -685,7 +722,12 @@ async function removeRule(id: string) {
 }
 
 async function copyChatgpt() {
-  await navigator.clipboard.writeText(chatgptBrief(analysis.value))
+  // The copied text always carries the real amounts, even in privacy mode.
+  const hidden = privacyMode.value
+  privacyMode.value = false
+  const brief = chatgptBrief(analysis.value)
+  privacyMode.value = hidden
+  await navigator.clipboard.writeText(brief)
   flash("Resumen copiado. Pégalo en ChatGPT.")
 }
 
@@ -728,30 +770,36 @@ function clearLocal() {
   flash("Copia local borrada.")
 }
 
+/** Opens the movements of one merchant or category, from the top of the page. */
+function openMovements() {
+  tab.value = "movimientos"
+  if (typeof window !== "undefined") window.scrollTo({ top: 0 })
+}
+
 function openMerchant(name: string) {
   query.value = name
   category.value = "all"
-  tab.value = "movimientos"
+  openMovements()
 }
 
 function openCategory(name: string) {
   category.value = name
   query.value = ""
-  tab.value = "movimientos"
+  openMovements()
 }
 
 export function useFinance() {
   return {
     // state
     authed, authChecked, tab, transactions, tickets, budgets, rules, budgetDraft, updatedAt, notice, busy,
-    offline, account, category, query, period, selectedMonth, availableMonths, currentMonth, from, to, draft, selectedTxId, scanBusy, suggestion,
+    offline, account, category, query, period, privacyMode, selectedMonth, availableMonths, currentMonth, from, to, draft, selectedTxId, scanBusy, suggestion,
     // derived
     sortedRules, normalized, analysis, view, periodTx, filtered, accounts, categories, hasData, ticketMatches,
-    ruleCounts, updatedLabel, categoryColors, savingsAccounts,
+    ruleCounts, updatedLabel, lastSyncLabel, categoryColors, savingsAccounts,
     // actions
     flash, applyPeriod, applyMonth, stepMonth, init, doLogin, doLogout, importFiles, scanTicket, saveTicketDraft, removeTicket,
     persistBudgets, setCategory, unlockCategory, upsertRule, acceptSuggestion, removeRule, copyChatgpt,
-    clearLocal, openMerchant, openCategory, exportForChatGpt,
+    clearLocal, openMerchant, openCategory, exportForChatGpt, togglePrivacy,
     // bank
     bank, bankBusy, activeBankSession, loadBank, connectBank, syncBank, renameBankAccount, disconnectBank,
   }

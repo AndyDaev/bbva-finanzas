@@ -1,9 +1,14 @@
-export const euro = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" })
-export const euroWhole = new Intl.NumberFormat("es-ES", {
-  style: "currency",
-  currency: "EUR",
-  maximumFractionDigits: 0,
-})
+import { ref } from "vue"
+
+/** Privacy mode: every amount shown through `euro` / `euroWhole` is hidden. Reactive. */
+export const privacyMode = ref(false)
+const HIDDEN = "•••• €"
+
+const euroFull = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" })
+const euroNoCents = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 0 })
+
+export const euro = { format: (value: number) => (privacyMode.value ? HIDDEN : euroFull.format(value)) }
+export const euroWhole = { format: (value: number) => (privacyMode.value ? HIDDEN : euroNoCents.format(value)) }
 
 const longMonth = new Intl.DateTimeFormat("es-ES", { month: "long", year: "numeric" })
 const shortMonthFmt = new Intl.DateTimeFormat("es-ES", { month: "short" })

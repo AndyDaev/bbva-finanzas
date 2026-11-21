@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted, ref } from "vue"
+import { computed, defineAsyncComponent, onMounted, ref } from "vue"
+import { ChartLineIcon, EllipsisIcon, HouseIcon, ListIcon } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import AppHeader from "@/components/finance/AppHeader.vue"
@@ -9,6 +10,7 @@ import FiltersBar from "@/components/finance/FiltersBar.vue"
 import KpiCards from "@/components/finance/KpiCards.vue"
 import LoginScreen from "@/components/finance/LoginScreen.vue"
 import MerchantsTab from "@/components/finance/MerchantsTab.vue"
+import MonthStrip from "@/components/finance/MonthStrip.vue"
 import SummaryTab from "@/components/finance/SummaryTab.vue"
 import TransactionsTab from "@/components/finance/TransactionsTab.vue"
 import { useFinance, type Tab } from "@/lib/useFinance"
@@ -28,6 +30,21 @@ const tabs: Array<[Tab, string]> = [
   ["tickets", "Tickets"],
   ["reglas", "Reglas"],
 ]
+
+// Mobile: the four most used places in a bottom bar, the rest under "Más".
+const bottomTabs = [
+  { key: "resumen" as Tab, label: "Resumen", icon: HouseIcon },
+  { key: "movimientos" as Tab, label: "Movimientos", icon: ListIcon },
+  { key: "evolucion" as Tab, label: "Evolución", icon: ChartLineIcon },
+]
+const moreTabs = tabs.filter(([key]) => !bottomTabs.some((item) => item.key === key))
+const moreOpen = ref(false)
+const inMore = computed(() => moreTabs.some(([key]) => key === tab.value))
+function go(next: Tab) {
+  tab.value = next
+  moreOpen.value = false
+  window.scrollTo({ top: 0, behavior: "smooth" })
+}
 
 onMounted(init)
 </script>
@@ -52,14 +69,14 @@ onMounted(init)
     <Transition name="toast">
       <div
         v-if="notice"
-        class="glass fixed bottom-20 left-1/2 z-40 w-[min(92vw,30rem)] -translate-x-1/2 rounded-2xl border border-white/10 px-4 py-3 text-sm shadow-[0_20px_60px_-20px_rgba(0,0,0,0.9)] md:bottom-8"
+        class="glass fixed bottom-24 left-1/2 z-40 w-[min(92vw,30rem)] -translate-x-1/2 rounded-2xl border border-white/10 px-4 py-3 text-sm shadow-[0_20px_60px_-20px_rgba(0,0,0,0.9)] md:bottom-8"
         role="status"
       >
         <span class="mr-2 inline-block size-1.5 -translate-y-px rounded-full bg-brand align-middle" aria-hidden="true" />{{ notice }}
       </div>
     </Transition>
 
-    <nav class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [-ms-overflow-style:none] [scrollbar-width:none] md:mx-0 md:px-0 [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Secciones">
+    <nav class="-mx-4 hidden gap-2 overflow-x-auto px-4 pb-1 [-ms-overflow-style:none] [scrollbar-width:none] md:mx-0 md:flex md:px-0 [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Secciones">
       <button
         v-for="[key, label] in tabs"
         :key="key"
@@ -90,6 +107,7 @@ onMounted(init)
         </template>
 
         <template v-else>
+          <MonthStrip v-if="tab !== 'tickets' && tab !== 'reglas'" />
           <FiltersBar v-if="tab !== 'tickets' && tab !== 'reglas'" />
           <KpiCards v-if="tab === 'resumen' || tab === 'evolucion'" />
 
@@ -102,5 +120,47 @@ onMounted(init)
         </template>
       </div>
     </Transition>
+
+    <!-- Mobile bottom bar (thumb reach) -->
+    <nav class="glass fixed inset-x-0 bottom-0 z-30 border-t border-white/[0.08] pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Secciones">
+      <Transition name="tab">
+        <div v-if="moreOpen" class="absolute right-3 bottom-full mb-2 min-w-[200px] rounded-2xl border border-white/10 bg-[#0b0b0b] p-1.5 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.9)]">
+          <button
+            v-for="[key, label] in moreTabs"
+            :key="key"
+            type="button"
+            class="flex min-h-11 w-full items-center rounded-xl px-3 text-left text-sm hover:bg-white/[0.06]"
+            :class="tab === key ? 'text-brand' : ''"
+            @click="go(key)"
+          >
+            {{ label }}
+          </button>
+        </div>
+      </Transition>
+      <div class="grid grid-cols-4">
+        <button
+          v-for="item in bottomTabs"
+          :key="item.key"
+          type="button"
+          class="flex min-h-15 flex-col items-center justify-center gap-1 text-[0.68rem] font-medium transition-colors"
+          :class="tab === item.key ? 'text-foreground' : 'text-muted-foreground'"
+          :aria-current="tab === item.key ? 'page' : undefined"
+          @click="go(item.key)"
+        >
+          <component :is="item.icon" class="size-5" :class="tab === item.key ? 'text-brand' : ''" aria-hidden="true" />
+          {{ item.label }}
+        </button>
+        <button
+          type="button"
+          class="flex min-h-15 flex-col items-center justify-center gap-1 text-[0.68rem] font-medium"
+          :class="inMore || moreOpen ? 'text-foreground' : 'text-muted-foreground'"
+          :aria-expanded="moreOpen"
+          @click="moreOpen = !moreOpen"
+        >
+          <EllipsisIcon class="size-5" :class="inMore ? 'text-brand' : ''" aria-hidden="true" />
+          {{ inMore ? moreTabs.find(([key]) => key === tab)?.[1] : "Más" }}
+        </button>
+      </div>
+    </nav>
   </main>
 </template>

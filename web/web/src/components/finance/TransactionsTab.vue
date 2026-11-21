@@ -3,11 +3,17 @@ import { computed, ref, watch } from "vue"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { CATEGORY_OPTIONS, cleanName, euro, formatDay, parseBankText } from "@/lib/money"
+import { XIcon } from "@lucide/vue"
+import { CATEGORY_OPTIONS, cleanName, euro, formatDay, maskNumbers, parseBankText } from "@/lib/money"
 import { useFinance } from "@/lib/useFinance"
 
 const PAGE = 100
-const { filtered, suggestion, setCategory, unlockCategory, acceptSuggestion } = useFinance()
+const { filtered, suggestion, setCategory, unlockCategory, acceptSuggestion, query, category } = useFinance()
+/** Filters set from elsewhere (a category or merchant tapped in the Summary), shown as removable chips. */
+const activeFilters = computed(() => [
+  ...(category.value !== "all" ? [{ key: "category", label: category.value, clear: () => { category.value = "all" } }] : []),
+  ...(query.value.trim() ? [{ key: "query", label: `«${query.value.trim()}»`, clear: () => { query.value = "" } }] : []),
+])
 const limit = ref(PAGE)
 const hideInternal = ref(true)
 const visible = computed(() => (hideInternal.value ? filtered.value.filter((tx) => tx.category !== "Traspaso interno") : filtered.value))
@@ -20,7 +26,7 @@ const shownByDay = computed(() => {
     if (last && last.date === tx.date) last.items.push(tx)
     else groups.push({ date: tx.date, items: [tx] })
   }
-  return groups
+  return groups.map((group) => ({ ...group, total: group.items.reduce((sum, tx) => sum + tx.amount, 0) }))
 })
 const dayFormat = new Intl.DateTimeFormat("es-ES", { weekday: "short", day: "numeric", month: "short" })
 function dayLabel(date: string) {
@@ -51,7 +57,7 @@ watch(suggestion, (value) => {
 })
 
 /** Clean merchant name plus BBVA's own description (category or movement type). */
-const maskCard = (value: string) => value.replace(/d{4}d{6,11}(d{4})/g, "•••• $1")
+const maskCard = maskNumbers
 
 function describe(text: string) {
   const parts = parseBankText(text)
@@ -89,6 +95,18 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
         {{ visible.length }} movimientos · entradas {{ euro.format(totals.income) }} · salidas {{ euro.format(totals.expense) }}
         · cambia la categoría para fijarla
       </CardDescription>
+      <div v-if="activeFilters.length" class="mt-2 flex flex-wrap gap-1.5">
+        <button
+          v-for="item in activeFilters"
+          :key="item.key"
+          type="button"
+          class="pill flex min-h-8 items-center gap-1.5 px-3 text-xs font-medium"
+          :aria-label="`Quitar filtro ${item.label}`"
+          @click="item.clear()"
+        >
+          {{ item.label }}<XIcon class="size-3.5" aria-hidden="true" />
+        </button>
+      </div>
       <label v-if="internalCount || !hideInternal" class="mt-2 flex w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground">
         <input v-model="hideInternal" type="checkbox" class="size-4 accent-[var(--brand)]">
         Ocultar traspasos entre mis cuentas<template v-if="hideInternal && internalCount"> ({{ internalCount }})</template>
@@ -145,7 +163,10 @@ function onCategory(tx: (typeof filtered.value)[number], event: Event) {
       <!-- Mobile: compact rows grouped by day; the amount always visible, category as a small pill. -->
       <div class="md:hidden">
         <section v-for="group in shownByDay" :key="group.date" class="min-w-0">
-          <p class="mono-label pt-3 pb-1">{{ dayLabel(group.date) }}</p>
+          <p class="mono-label flex justify-between gap-3 pt-3 pb-1">
+            <span>{{ dayLabel(group.date) }}</span>
+            <span class="tabular-nums" :class="group.total > 0 ? 'text-good' : ''">{{ euro.format(group.total) }}</span>
+          </p>
           <ul class="divide-y divide-dashed divide-white/10">
             <li v-for="tx in group.items" :key="tx.id || `${tx.date}-${tx.text}-${tx.amount}-${tx.account}`" class="min-w-0 py-2.5">
               <div class="flex min-w-0 items-baseline justify-between gap-3">

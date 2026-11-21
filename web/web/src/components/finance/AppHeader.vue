@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue"
+import { EyeIcon, EyeOffIcon, RefreshCwIcon } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { useFinance } from "@/lib/useFinance"
 import RevealText from "./RevealText.vue"
 
-const { busy, scanBusy, offline, updatedLabel, importFiles, scanTicket, copyChatgpt, exportForChatGpt, doLogout, activeBankSession, bankBusy, syncBank } = useFinance()
+const {
+  busy, scanBusy, offline, updatedLabel, lastSyncLabel, privacyMode, togglePrivacy,
+  importFiles, scanTicket, copyChatgpt, exportForChatGpt, doLogout, activeBankSession, bankBusy, syncBank,
+} = useFinance()
 const fileInput = ref<HTMLInputElement | null>(null)
 const ticketInput = ref<HTMLInputElement | null>(null)
 const menuOpen = ref(false)
@@ -49,8 +53,21 @@ onBeforeUnmount(() => document.removeEventListener("click", closeOnOutside))
         <span class="mono-label hidden truncate sm:inline">/ Finanzas</span>
       </div>
       <div ref="menuRoot" class="relative flex items-center gap-2">
-        <Button v-if="activeBankSession" size="sm" class="min-h-9" :disabled="bankBusy" @click="syncBank()">
-          {{ bankBusy ? "Sincronizando…" : "Sincronizar" }}
+        <Button
+          size="sm"
+          variant="ghost"
+          class="size-9 p-0"
+          :aria-pressed="privacyMode"
+          :aria-label="privacyMode ? 'Mostrar importes' : 'Ocultar importes'"
+          :title="privacyMode ? 'Mostrar importes' : 'Ocultar importes'"
+          @click="togglePrivacy"
+        >
+          <EyeOffIcon v-if="privacyMode" class="size-4.5 text-brand" aria-hidden="true" />
+          <EyeIcon v-else class="size-4.5" aria-hidden="true" />
+        </Button>
+        <Button v-if="activeBankSession" size="sm" class="min-h-9 gap-1.5" :disabled="bankBusy" :aria-label="bankBusy ? 'Sincronizando' : 'Sincronizar con BBVA'" @click="syncBank()">
+          <RefreshCwIcon class="size-4" :class="bankBusy ? 'animate-spin' : ''" aria-hidden="true" />
+          <span class="hidden sm:inline">{{ bankBusy ? "Sincronizando…" : "Sincronizar" }}</span>
         </Button>
         <!-- With BBVA connected the bank is the source of truth: Excel import moves to "Más". -->
         <Button v-if="!activeBankSession" size="sm" class="min-h-9" :disabled="busy" @click="openImport()">
@@ -77,9 +94,14 @@ onBeforeUnmount(() => document.removeEventListener("click", closeOnOutside))
         <RevealText :text="'Tus\nfinanzas'" :delay="350" />
       </h1>
       <p class="mono-label pb-2 text-right leading-relaxed">
-        <span :class="offline ? 'text-warn' : ''">{{ offline ? "Sin conexión · copia local" : "Sincronizado en la nube" }}</span>
-        <br v-if="updatedLabel">
-        <span v-if="updatedLabel">{{ updatedLabel }}</span>
+        <span v-if="offline" class="text-warn">Sin conexión · copia local</span>
+        <span v-else-if="bankBusy" class="text-foreground">Sincronizando con BBVA…</span>
+        <span v-else-if="activeBankSession && lastSyncLabel">BBVA · sincronizado {{ lastSyncLabel }}</span>
+        <span v-else>Guardado en la nube</span>
+        <template v-if="updatedLabel && !activeBankSession">
+          <br>
+          <span>{{ updatedLabel }}</span>
+        </template>
       </p>
     </div>
   </header>

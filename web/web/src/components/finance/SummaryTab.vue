@@ -9,8 +9,9 @@ import { euro, euroWhole, formatDay, splitRecurring, type DailyPace } from "@/li
 import { BUDGET_CATEGORIES, useFinance } from "@/lib/useFinance"
 import BankCard from "./BankCard.vue"
 import SavingsCard from "./SavingsCard.vue"
-import CountUp from "./CountUp.vue"
 import DeltaNote from "./DeltaNote.vue"
+import FoldSection from "./FoldSection.vue"
+import TodayCard from "./TodayCard.vue"
 
 const emit = defineEmits<{ "import-account": [name: string] }>()
 const {
@@ -58,6 +59,15 @@ const recurringGroups = computed(() => {
   ]
 })
 const topInsights = computed(() => analysis.value.insights.slice(0, 6))
+
+// One-line summaries shown on folded sections.
+const recurringSummary = computed(() =>
+  recurringGroups.value.map((group) => `${group.items.length} ${group.title.toLowerCase()} · ${euroWhole.format(group.monthly)}/mes`).join(" · "),
+)
+const accountsSummary = computed(() => {
+  const total = accounts.value.reduce((sum, item) => sum + (item.balance ?? 0), 0)
+  return `${accounts.value.length} ${accounts.value.length === 1 ? "cuenta" : "cuentas"} · ${euroWhole.format(total)}`
+})
 </script>
 
 <template>
@@ -65,39 +75,11 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
     <Badge v-for="item in topInsights" :key="item" variant="secondary" class="whitespace-normal text-left">{{ item }}</Badge>
   </div>
 
-  <!-- Until payday: what can be spent per day once pending bills are covered -->
-  <Card v-if="analysis.payday && !viewingPastMonth">
-    <CardContent class="grid gap-6 pt-6 sm:grid-cols-[1.3fr_1fr]">
-      <div class="space-y-3">
-        <p class="mono-label">
-          Hasta tu nómina · {{ analysis.payday.estimated ? "~" : "" }}{{ formatDay(analysis.payday.nextPayday) }} · {{ analysis.payday.daysLeft }} {{ analysis.payday.daysLeft === 1 ? "día" : "días" }}
-        </p>
-        <p class="flex items-baseline gap-2">
-          <span class="text-[2.6rem] leading-none font-semibold tracking-[-0.04em]" :class="analysis.payday.perDay < 10 ? 'text-warn' : ''">
-            <CountUp :value="analysis.payday.perDay" :format="(v: number) => euro.format(v)" />
-          </span>
-          <span class="text-sm text-muted-foreground">al día para gastar</span>
-        </p>
-        <p class="text-sm text-muted-foreground">
-          Tienes {{ euro.format(analysis.payday.available) }} en tu cuenta principal<template v-if="analysis.payday.pendingBills > 0">, de los que {{ euro.format(analysis.payday.pendingBills) }} ya están comprometidos en recibos</template>.
-          <template v-if="analysis.payday.perDay < 10"> ⚠ Vas justo hasta el cobro.</template>
-        </p>
-      </div>
-      <div class="space-y-2">
-        <p class="mono-label">Recibos antes de la nómina</p>
-        <ul v-if="analysis.payday.pendingItems.length" class="divide-y divide-dashed divide-white/10 text-sm">
-          <li v-for="item in analysis.payday.pendingItems" :key="item.name + item.date" class="flex items-center justify-between gap-3 py-1.5">
-            <span class="min-w-0 truncate">{{ item.name }} <span class="text-xs text-muted-foreground">· {{ formatDay(item.date).slice(0, 5) }}</span></span>
-            <span class="shrink-0 tabular-nums">{{ euro.format(item.amount) }}</span>
-          </li>
-        </ul>
-        <p v-else class="text-sm text-muted-foreground">No hay recibos ni suscripciones pendientes antes del cobro.</p>
-      </div>
-    </CardContent>
-  </Card>
+  <TodayCard v-if="!viewingPastMonth" />
 
   <!-- Month pace -->
-  <section v-if="pace && analysis.forecast && !viewingPastMonth" class="grid gap-3 lg:grid-cols-5">
+  <FoldSection v-if="pace && analysis.forecast && !viewingPastMonth" id="ritmo" title="Ritmo y previsión" :summary="`previsión ~${euroWhole.format(analysis.forecast.projected)}`">
+  <section class="grid gap-3 lg:grid-cols-5">
     <Card class="lg:col-span-3">
       <CardHeader>
         <CardTitle>Ritmo de gasto en {{ pace.label }}</CardTitle>
@@ -157,8 +139,10 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
       </CardContent>
     </Card>
   </section>
+  </FoldSection>
 
   <!-- Categories and merchants -->
+  <FoldSection id="gasto" title="En qué gastas" :summary="euroWhole.format(view.expense)" default-open>
   <section class="grid gap-3 lg:grid-cols-5">
     <Card class="lg:col-span-3">
       <CardHeader>
@@ -209,8 +193,10 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
       </CardContent>
     </Card>
   </section>
+  </FoldSection>
 
   <!-- Subscriptions and bills, counted apart -->
+  <FoldSection id="fijos" title="Fijos" :summary="recurringSummary">
   <section class="grid gap-3 lg:grid-cols-2">
     <Card v-for="group in recurringGroups" :key="group.key">
       <CardHeader>
@@ -222,7 +208,7 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         </CardDescription>
       </CardHeader>
       <CardContent class="space-y-1">
-        <div v-for="item in group.items" :key="item.key" class="flex items-start justify-between gap-3 border-t border-dashed border-white/10 py-2 first:border-0">
+        <button v-for="item in group.items" :key="item.key" type="button" class="flex w-full items-start justify-between gap-3 border-t border-dashed border-white/10 py-2 text-left first:border-0 hover:bg-muted/40" @click="openMerchant(item.name)">
           <div class="min-w-0">
             <p class="flex flex-wrap items-center gap-2 font-medium">
               <span class="truncate">{{ item.name }}</span>
@@ -238,20 +224,17 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
             <strong class="tabular-nums">{{ euro.format(item.amount) }}</strong><span class="text-xs text-muted-foreground">/{{ item.cadence === "yearly" ? "año" : "mes" }}</span>
             <p class="text-xs text-muted-foreground tabular-nums">{{ euroWhole.format(item.annual) }}/año</p>
           </div>
-        </div>
+        </button>
         <p v-if="!group.items.length" class="text-sm text-muted-foreground">{{ group.empty }}</p>
       </CardContent>
     </Card>
   </section>
+  </FoldSection>
 
   <!-- Advice -->
-  <section>
+  <FoldSection id="mejorar" title="Qué mejorar" :summary="`${analysis.advice.actions.length} ideas`">
     <Card>
-      <CardHeader>
-        <CardTitle>Qué mejorar</CardTitle>
-        <CardDescription>Calculado a partir de tus datos</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-3">
+      <CardContent class="space-y-3 pt-6">
         <ol class="list-decimal space-y-2 pl-4 text-sm">
           <li v-for="item in analysis.advice.actions" :key="item">{{ item }}</li>
         </ol>
@@ -261,13 +244,13 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         <Button variant="outline" class="min-h-10" @click="copyChatgpt">Copiar resumen para ChatGPT</Button>
       </CardContent>
     </Card>
-  </section>
+  </FoldSection>
 
   <!-- Budgets -->
+  <FoldSection id="presupuestos" title="Presupuestos" :summary="analysis.budgets.length ? `${analysis.budgets.length} límites${analysis.budgets.some((item) => item.state !== 'ok') ? ' · ⚠ revisar' : ''}` : 'sin límites'">
   <Card>
     <CardHeader class="flex flex-row flex-wrap items-start justify-between gap-3">
       <div>
-        <CardTitle>Presupuestos del mes</CardTitle>
         <CardDescription>Límites por categoría con aviso si vas a pasarte</CardDescription>
       </div>
       <div class="flex gap-2">
@@ -302,13 +285,15 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
       <p v-else-if="!editingBudgets" class="text-sm text-muted-foreground">Sin límites. Pulsa «Editar límites» y pon, por ejemplo, Restauración 150 €.</p>
     </CardContent>
   </Card>
+  </FoldSection>
 
-  <SavingsCard />
+  <FoldSection id="ahorro" title="Ahorro" :summary="analysis.savingsLedger?.closing != null ? `saldo ${euroWhole.format(analysis.savingsLedger.closing)}` : ''">
+    <SavingsCard />
+  </FoldSection>
 
+  <FoldSection id="cuentas" title="Cuentas y banco" :summary="accountsSummary">
   <BankCard />
-
-  <section class="grid gap-3 lg:grid-cols-2">
-    <Card>
+  <Card>
       <CardHeader>
         <CardTitle>Cuentas</CardTitle>
         <CardDescription>
@@ -336,9 +321,12 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         <Button v-if="accounts.length" variant="ghost" size="sm" class="mt-2" @click="clearLocal">Borrar copia local</Button>
       </CardContent>
     </Card>
+  </FoldSection>
+
+  <FoldSection id="grandes" title="Compras grandes" :summary="view.biggest.length ? `la mayor ${euroWhole.format(Math.max(...view.biggest.map((item) => Math.abs(item.amount))))}` : ''">
+  <section class="grid gap-3 lg:grid-cols-2">
     <Card>
       <CardHeader>
-        <CardTitle>Compras grandes</CardTitle>
         <CardDescription>Los importes más altos del periodo</CardDescription>
       </CardHeader>
       <CardContent class="space-y-1">
@@ -358,8 +346,6 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
         <p v-if="!view.biggest.length" class="text-sm text-muted-foreground">Aún no hay compras en este periodo.</p>
       </CardContent>
     </Card>
-  </section>
-
   <Card v-if="view.ticketItems.length">
     <CardHeader>
       <CardTitle>Artículos de tickets</CardTitle>
@@ -372,4 +358,6 @@ const topInsights = computed(() => analysis.value.insights.slice(0, 6))
       </div>
     </CardContent>
   </Card>
+  </section>
+  </FoldSection>
 </template>
