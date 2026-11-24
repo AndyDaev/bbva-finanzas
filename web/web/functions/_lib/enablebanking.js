@@ -171,8 +171,13 @@ export async function fetchAllTransactions(env, accountUid, dateFrom, request, m
 }
 
 export async function fetchBookedBalance(env, accountUid, request) {
+  return (await fetchBalances(env, accountUid, request)).booked
+}
+
+/** Booked balance (movements already posted) and available balance (minus card holds). */
+export async function fetchBalances(env, accountUid, request) {
   const data = await ebFetch(env, `/accounts/${encodeURIComponent(accountUid)}/balances`, { headers: psuHeaders(request) })
-  return pickBookedBalance(data.balances || [])
+  return pickBalances(data.balances || [])
 }
 
 // ───────────── Pure mapping helpers (tested) ─────────────
@@ -189,6 +194,16 @@ export function pickBookedBalance(balances) {
   if (!best) return null
   const amount = Number(best.balance_amount?.amount)
   return Number.isFinite(amount) ? { amount, date: best.reference_date || null, type: best.balance_type } : null
+}
+
+const AVAILABLE_PREFERENCE = ["ITAV", "CLAV", "XPCD", "OPAV", "FWAV"]
+
+/** { booked, available }: available is what can be spent now (card holds already taken off). */
+export function pickBalances(balances) {
+  const booked = pickBookedBalance(balances.filter((item) => !AVAILABLE_PREFERENCE.slice(0, 2).includes(item.balance_type)))
+  const availableRow = AVAILABLE_PREFERENCE.map((type) => balances.find((item) => item.balance_type === type)).find(Boolean)
+  const available = availableRow ? Number(availableRow.balance_amount?.amount) : NaN
+  return { booked: booked || pickBookedBalance(balances), available: Number.isFinite(available) ? available : null }
 }
 
 function hash32(text) {
@@ -248,17 +263,26 @@ export function backfillBalances(rows, booked) {
  * Fills missing balances walking forward from the last real balance before them: unlike
  * working back from the bank's booked balance, this stays right when that balance is a few
  * minutes stale (it may not include today's movements yet). Rows must be sorted by date.
- * Rows that already have a balance keep it and re-anchor the walk.
+ * Rows that already have a balance keep it and re-anchor the walk, unless `overwrite` is set:
+ * then every row is recomputed from the anchor (fixes balances left inconsistent when movements
+ * of the same day arrived in different syncs).
  */
-export function planForwardBalances(rows, anchorBalance) {
+export function planForwardBalances(rows, anchorBalance, { overwrite = false } = {}) {
   const updates = []
   let running = anchorBalance
   for (const row of rows) {
     running = Math.round((running + Number(row.amount)) * 100) / 100
-    if (row.balance_after == null) updates.push({ id: row.id, balance: running })
+    if (overwrite) {
+      if (row.balance_after == null || Math.abs(Number(row.balance_after) - running) > 0.004) updates.push({ id: row.id, balance: running })
+    } else if (row.balance_after == null) updates.push({ id: row.id, balance: running })
     else running = Number(row.balance_after)
   }
   return updates
+}
+
+/** Last balance a forward walk reaches (the account balance after the last row). */
+export function forwardEnd(rows, anchorBalance) {
+  return Math.round(rows.reduce((total, row) => total + Number(row.amount) * 100, anchorBalance * 100)) / 100
 }
 
 /** A card purchase can be booked by the bank a few days after the date the Excel shows. */

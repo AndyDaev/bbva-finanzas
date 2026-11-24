@@ -74,6 +74,9 @@ const short = (iso: string) => formatDay(iso).slice(0, 5)
             <dd class="tabular-nums">{{ payday.estimated ? "~" : "" }}{{ short(payday.nextPayday) }} · {{ payday.daysLeft }} d</dd>
           </div>
         </dl>
+        <p v-if="payday.held > 0" class="text-sm text-muted-foreground">
+          Disponible según BBVA: ya descuenta {{ euro.format(payday.held) }} de compras con tarjeta que aún no aparecen en tus movimientos.
+        </p>
         <p v-if="tight" class="text-sm text-warn">⚠ Vas justo hasta el cobro.</p>
       </div>
 

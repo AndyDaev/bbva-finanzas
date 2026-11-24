@@ -1,8 +1,9 @@
 import { json } from "../../_lib/auth.js"
-import { ensureSchema, loadAll, loadBankSessions, readJson, setUpdatedAt } from "../../_lib/db.js"
+import { ensureSchema, loadAll, loadBankSessions, readJson, setMeta, setUpdatedAt } from "../../_lib/db.js"
 import {
   BankError,
-  fetchBookedBalance,
+  fetchBalances,
+  forwardEnd,
   fetchTransactionsPage,
   isConfigured,
   mapBankTransaction,
@@ -109,10 +110,6 @@ async function writeRows(db, account, rows, now) {
   return { inserted: plan.inserts.length, updated: plan.updates.length, skipped: plan.skipped }
 }
 
-/**
- * Rebuilds missing balances backwards from the bank's booked balance in one statement:
- * balance after a row = booked − sum of every later row. Rows with a balance are kept.
- */
 /** End-of-day balance among same-day rows: the one no other row of the day starts from. */
 function endOfDay(rows) {
   const starts = rows.map((row) => Math.round((row.balance_after - row.amount) * 100))
@@ -120,24 +117,35 @@ function endOfDay(rows) {
   return (last || rows[rows.length - 1]).balance_after
 }
 
-async function backfillBalances(env, db, account, request) {
-  const gap = await db.prepare(`SELECT MIN(date) AS first FROM transactions WHERE account = ? AND balance_after IS NULL`).bind(account.accountName).first()
-  if (!gap?.first) return
-  // Preferred: walk forward from the last day before the gap whose balances are known.
+/** Recent days are recomputed on every sync: movements of one day can arrive in several syncs. */
+const RECOMPUTE_DAYS = 14
+
+/**
+ * Balance after each movement (the API sends none). Recomputes the last RECOMPUTE_DAYS (and any
+ * older gap) walking forward from the last settled day, then stores the bank's own balances:
+ * booked (posted movements) and available (minus card holds the API does not list).
+ */
+async function backfillBalances(env, db, account, request, now) {
+  const bank = await fetchBalances(env, account.uid, request).catch(() => null)
+  const gap = await db.prepare("SELECT MIN(date) AS first FROM transactions WHERE account = ? AND balance_after IS NULL").bind(account.accountName).first()
+  const recent = daysAgo(RECOMPUTE_DAYS)
+  const windowStart = gap?.first && gap.first < recent ? gap.first : recent
   const anchorDay = await db
-    .prepare(`SELECT MAX(date) AS day FROM transactions WHERE account = ? AND date < ? AND balance_after IS NOT NULL`)
-    .bind(account.accountName, gap.first)
+    .prepare("SELECT MAX(date) AS day FROM transactions WHERE account = ? AND date < ? AND balance_after IS NOT NULL")
+    .bind(account.accountName, windowStart)
     .first()
+  let computed = null
   if (anchorDay?.day) {
     const sameDay = await db
-      .prepare(`SELECT amount, balance_after FROM transactions WHERE account = ? AND date = ? AND balance_after IS NOT NULL`)
+      .prepare("SELECT amount, balance_after FROM transactions WHERE account = ? AND date = ? AND balance_after IS NOT NULL")
       .bind(account.accountName, anchorDay.day)
       .all()
-    const following = await db
-      .prepare(`SELECT id, date, amount, balance_after FROM transactions WHERE account = ? AND date > ? ORDER BY date, id`)
+    const following = (await db
+      .prepare("SELECT id, date, amount, balance_after FROM transactions WHERE account = ? AND date > ? ORDER BY date, amount DESC, id")
       .bind(account.accountName, anchorDay.day)
-      .all()
-    const updates = planForwardBalances(following.results || [], endOfDay(sameDay.results || []))
+      .all()).results || []
+    const anchor = endOfDay(sameDay.results || [])
+    const updates = planForwardBalances(following, anchor, { overwrite: true })
     if (updates.length) {
       await db
         .prepare(
@@ -148,22 +156,30 @@ async function backfillBalances(env, db, account, request) {
         .bind(JSON.stringify(updates))
         .run()
     }
-    return
+    computed = forwardEnd(following, anchor)
+  } else if (bank?.booked) {
+    // No settled balance yet (first sync): work back from the bank's booked balance.
+    await db
+      .prepare(
+        `WITH calc AS (
+           SELECT id, ROUND(? - COALESCE(SUM(amount) OVER (ORDER BY date DESC, id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0), 2) AS balance
+           FROM transactions WHERE account = ?
+         )
+         UPDATE transactions SET balance_after = (SELECT balance FROM calc WHERE calc.id = transactions.id)
+         WHERE account = ? AND balance_after IS NULL`,
+      )
+      .bind(bank.booked.amount, account.accountName, account.accountName)
+      .run()
+    computed = bank.booked.amount
   }
-  // No known balance before the gap (first sync): work back from the bank's booked balance.
-  const booked = await fetchBookedBalance(env, account.uid, request).catch(() => null)
-  if (!booked) return
-  await db
-    .prepare(
-      `WITH calc AS (
-         SELECT id, ROUND(? - COALESCE(SUM(amount) OVER (ORDER BY date DESC, id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0), 2) AS balance
-         FROM transactions WHERE account = ?
-       )
-       UPDATE transactions SET balance_after = (SELECT balance FROM calc WHERE calc.id = transactions.id)
-       WHERE account = ? AND balance_after IS NULL`,
-    )
-    .bind(booked.amount, account.accountName, account.accountName)
-    .run()
+  if (bank?.booked || bank?.available != null) {
+    await setMeta(db, `bank_balance:${account.accountName}`, JSON.stringify({
+      booked: bank.booked?.amount ?? null,
+      available: bank.available,
+      computed,
+      at: now,
+    }))
+  }
 }
 
 export async function onRequestPost(context) {
@@ -218,7 +234,7 @@ export async function onRequestPost(context) {
       stats.skipped += written.skipped
       if (!key) {
         // The API sends no balance per movement: fill the missing ones on every sync.
-        await backfillBalances(env, db, account, request)
+        await backfillBalances(env, db, account, request, now)
         stats.accounts += 1
         accountDone = true
       }

@@ -1,3 +1,4 @@
+import type { BankBalance } from "./analysis"
 import type { UserRule } from "./categorize"
 import type { Budget, Transaction } from "./ids"
 import type { TicketDraft } from "./tickets"
@@ -18,6 +19,8 @@ export type StoreData = {
   budgets: Budget[]
   rules: UserRule[]
   updatedAt: string | null
+  /** The bank's balances per account (booked / available), saved on each sync. */
+  bankBalances?: Record<string, BankBalance>
 }
 
 export type ImportStats = { inserted: number, updated: number, total: number }
@@ -35,6 +38,7 @@ function normalize(data: Partial<StoreData> | null | undefined): StoreData {
     budgets: list<Budget>(data?.budgets),
     rules: list<UserRule>(data?.rules),
     updatedAt: data?.updatedAt || null,
+    bankBalances: data?.bankBalances && typeof data.bankBalances === "object" ? data.bankBalances : {},
   }
 }
 

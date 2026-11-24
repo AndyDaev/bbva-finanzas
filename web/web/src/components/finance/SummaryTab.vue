@@ -15,7 +15,7 @@ import TodayCard from "./TodayCard.vue"
 
 const emit = defineEmits<{ "import-account": [name: string] }>()
 const {
-  analysis, view, accounts, budgetDraft, categoryColors, savingsAccounts, selectedMonth, currentMonth,
+  analysis, view, accounts, budgetDraft, categoryColors, savingsAccounts, selectedMonth, currentMonth, bankBalances,
   persistBudgets, copyChatgpt, clearLocal, openMerchant, openCategory,
 } = useFinance()
 
@@ -356,6 +356,15 @@ const accountsSummary = computed(() => {
             </p>
             <p class="text-xs text-muted-foreground">
               {{ item.balance == null ? "Sin saldo" : `Saldo ${euro.format(item.balance)} · ${formatDay(item.balanceDate!)}` }}
+            </p>
+            <p v-if="bankBalances[item.name]?.booked != null" class="text-xs text-muted-foreground">
+              BBVA: contable {{ euro.format(bankBalances[item.name]!.booked!) }}<template v-if="bankBalances[item.name]!.available != null"> · disponible {{ euro.format(bankBalances[item.name]!.available!) }}</template>
+            </p>
+            <p
+              v-if="bankBalances[item.name]?.booked != null && bankBalances[item.name]?.computed != null && Math.abs(bankBalances[item.name]!.booked! - bankBalances[item.name]!.computed!) >= 0.01"
+              class="text-xs text-warn"
+            >
+              ⚠ {{ euro.format(Math.abs(bankBalances[item.name]!.booked! - bankBalances[item.name]!.computed!)) }} de diferencia con BBVA: llegarán en la próxima sincronización.
             </p>
           </div>
           <Button size="sm" class="min-h-10" variant="ghost" @click="emit('import-account', item.name)">Importar Excel</Button>

@@ -22,6 +22,7 @@ import {
   ruleMatches,
   sortRules,
   suggestPattern,
+  type BankBalance,
   type Budget,
   type Transaction,
   type UserRule,
@@ -100,6 +101,7 @@ const budgets = ref<Budget[]>([])
 const rules = ref<UserRule[]>([])
 const budgetDraft = ref<Record<string, string>>({})
 const updatedAt = ref<string | null>(null)
+const bankBalances = ref<Record<string, BankBalance>>({})
 const notice = ref("")
 const busy = ref(false)
 const offline = ref(false)
@@ -160,6 +162,7 @@ const analysis = computed(() =>
     budgets: budgets.value,
     rules: rules.value,
     savingsAccounts: savingsAccounts.value,
+    bankBalances: bankBalances.value,
     from: from.value,
     to: to.value,
   }),
@@ -246,6 +249,7 @@ function snapshot(): StoreData {
     budgets: budgets.value,
     rules: rules.value,
     updatedAt: updatedAt.value,
+    bankBalances: bankBalances.value,
   }
 }
 
@@ -270,6 +274,7 @@ function applyData(data: StoreData) {
   budgets.value = data.budgets
   rules.value = data.rules
   updatedAt.value = data.updatedAt || null
+  bankBalances.value = data.bankBalances || {}
   syncBudgetDraft()
   saveCache(data)
   // Presets depend on the pay cycle we are in, which is only known once data is loaded.
@@ -827,7 +832,7 @@ export function useFinance() {
   return {
     // state
     authed, authChecked, tab, transactions, tickets, budgets, rules, budgetDraft, updatedAt, notice, busy,
-    offline, account, category, query, period, privacyMode, selectedMonth, availableMonths, currentMonth, from, to, draft, selectedTxId, scanBusy, suggestion,
+    offline, account, category, query, period, privacyMode, bankBalances, selectedMonth, availableMonths, currentMonth, from, to, draft, selectedTxId, scanBusy, suggestion,
     // derived
     sortedRules, normalized, analysis, view, periodTx, filtered, accounts, categories, hasData, ticketMatches,
     ruleCounts, updatedLabel, lastSyncLabel, shoppingAll, ticketByTx, categoryColors, savingsAccounts,

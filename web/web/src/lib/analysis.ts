@@ -1105,6 +1105,20 @@ export function buildSavingsLedger(
 
 // ───────────────────────────── Until payday ─────────────────────────────
 
+/** The bank's own balances for an account, saved on each sync. */
+export type BankBalance = {
+  /** Posted movements only. */
+  booked: number | null
+  /** What can be spent now: card holds not yet posted are already taken off. */
+  available: number | null
+  /** Balance the app computes from the movements it has (to compare with `booked`). */
+  computed: number | null
+  at: string
+}
+
+/** Bank balances older than this are not trusted over the movements. */
+const BANK_BALANCE_MAX_AGE_MS = 36 * 60 * 60 * 1000
+
 export type PaydayBudget = {
   nextPayday: string
   /** Days from today until the payday (at least 1). */
@@ -1113,6 +1127,10 @@ export type PaydayBudget = {
   available: number
   pendingBills: number
   pendingItems: Array<{ name: string, amount: number, date: string, kind: RecurringCharge["kind"] }>
+  /** Card payments the bank has already taken off but not posted yet (not listed one by one). */
+  held: number
+  /** Where `available` comes from: the bank's available balance, or the movements. */
+  source: "bank" | "movements"
   /** What can be spent per day once pending bills are covered. */
   perDay: number
   /** True when there is no payroll history and the end of the month is assumed. */
@@ -1160,12 +1178,24 @@ export function buildPaydayBudget(
   recurring: RecurringCharge[],
   savingsAccounts: string[],
   todayIso: string,
+  bankBalances: Record<string, BankBalance> = {},
+  now = Date.now(),
 ): PaydayBudget | null {
   const spendingAccounts = accountsFromTransactions(transactions).filter((item) => item.balance != null && !savingsAccounts.includes(item.name))
   if (!spendingAccounts.length) return null
+  // Prefer the bank's available balance (card holds included) when it is recent.
+  let held = 0
+  let fromBank = 0
+  const balanceOf = (account: { name: string, balance: number | null }) => {
+    const bank = bankBalances[account.name]
+    if (!bank || bank.available == null || now - Date.parse(bank.at) > BANK_BALANCE_MAX_AGE_MS) return account.balance!
+    fromBank += 1
+    if (bank.booked != null && bank.booked - bank.available > 0.005) held += bank.booked - bank.available
+    return bank.available
+  }
   const { date: nextPayday, estimated } = estimateNextPayday(detectPaydays(transactions), todayIso)
   const daysLeft = Math.max(1, daysBetween(todayIso, nextPayday))
-  const available = sum(spendingAccounts.map((item) => item.balance!))
+  const available = sum(spendingAccounts.map(balanceOf))
   const pendingItems = recurring
     .filter((item) => item.nextDate >= todayIso && item.nextDate < nextPayday)
     .map((item) => ({ name: item.name, amount: item.amount, date: item.nextDate, kind: item.kind }))
@@ -1177,6 +1207,8 @@ export function buildPaydayBudget(
     available,
     pendingBills,
     pendingItems,
+    held: Math.round(held * 100) / 100,
+    source: fromBank ? "bank" : "movements",
     perDay: Math.max(0, available - pendingBills) / daysLeft,
     estimated,
   }
@@ -1196,6 +1228,8 @@ export function analyze(input: {
   rules?: UserRule[]
   /** Savings pots (see detectSavingsAccounts), computed over all accounts. */
   savingsAccounts?: string[]
+  /** The bank's balances per account (booked / available), from the last sync. */
+  bankBalances?: Record<string, BankBalance>
   from: string
   to: string
   today?: string
@@ -1275,7 +1309,7 @@ export function analyze(input: {
     cycle: { active: calendar.active, from: realFrom, to: lastPeriod?.to ?? realTo, periods },
     savingsLedger: buildSavingsLedger(input.transactions, savingsAccounts, periods),
     shopping: buildShopping(tickets, realFrom, lastPeriod?.to ?? realTo),
-    payday: input.to >= todayIso ? buildPaydayBudget(input.transactions, recurring, savingsAccounts, todayIso) : null,
+    payday: input.to >= todayIso ? buildPaydayBudget(input.transactions, recurring, savingsAccounts, todayIso, input.bankBalances) : null,
     balances,
     cushion,
     insights: buildInsights(view, recurring, budgets, forecast, cushion, compare),

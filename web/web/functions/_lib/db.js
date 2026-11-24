@@ -149,19 +149,30 @@ export async function loadRules(db) {
 
 export async function loadAll(db) {
   await ensureSchema(db)
-  const [txRows, tickets, budgets, rules, updatedAt] = await Promise.all([
+  const [txRows, tickets, budgets, rules, updatedAt, balanceRows] = await Promise.all([
     db.prepare(`SELECT * FROM transactions ORDER BY date DESC, id DESC`).all(),
     loadTickets(db),
     loadBudgets(db),
     loadRules(db),
     getUpdatedAt(db),
+    db.prepare(`SELECT key, value FROM meta WHERE key LIKE 'bank_balance:%'`).all(),
   ])
+  // Bank's own balances per account (booked / available), saved on each sync.
+  const bankBalances = {}
+  for (const row of balanceRows.results || []) {
+    try {
+      bankBalances[row.key.slice("bank_balance:".length)] = JSON.parse(row.value)
+    } catch {
+      // ignore a malformed entry
+    }
+  }
   return {
     transactions: (txRows.results || []).map(mapTransaction),
     tickets,
     budgets,
     rules,
     updatedAt,
+    bankBalances,
   }
 }
 

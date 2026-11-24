@@ -581,6 +581,18 @@ describe("money until payday", () => {
     const broke = buildPaydayBudget(normalizeTransactions([tx("2026-11-20", -5, "X", { balanceAfter: 10 })]), recurring, [], "2026-11-21")!
     expect(broke.perDay).toBe(0)
     expect(broke.estimated).toBe(true)
+
+    // With a recent bank balance, card holds not yet posted are already taken off.
+    const main = data.find((item) => item.text === "MERCADONA")!.account
+    const now = Date.parse("2026-11-21T12:00:00Z")
+    const withBank = buildPaydayBudget(data, recurring, ["Hucha"], "2026-11-21", { [main]: { booked: 300, available: 283.3, computed: 300, at: "2026-11-21T09:00:00Z" } }, now)!
+    expect(withBank.available).toBeCloseTo(283.3)
+    expect(withBank.held).toBeCloseTo(16.7)
+    expect(withBank.source).toBe("bank")
+    // A stale bank balance (over 36 h) is ignored.
+    const stale = buildPaydayBudget(data, recurring, ["Hucha"], "2026-11-21", { [main]: { booked: 300, available: 1, computed: 300, at: "2026-11-18T09:00:00Z" } }, now)!
+    expect(stale.available).toBe(300)
+    expect(stale.source).toBe("movements")
   })
 })
 

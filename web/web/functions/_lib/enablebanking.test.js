@@ -6,6 +6,8 @@ import {
   mapBankTransaction,
   maskIban,
   matchExistingAccount,
+  forwardEnd,
+  pickBalances,
   planForwardBalances,
   pickBookedBalance,
   planBankUpsert,
@@ -187,5 +189,29 @@ describe("sync keeps one row per movement", () => {
       { id: "b", balance: 1505 },
       { id: "c", balance: 1485 },
     ])
+  })
+
+  it("recomputes every recent row in overwrite mode (same-day movements from different syncs)", () => {
+    // Real case: 23/11 rows filled in two syncs ended with a wrong running balance (55,43 €).
+    const rows = [
+      row("a", "2026-11-23", 20, "", { balance_after: 55.26 }),
+      row("b", "2026-11-23", -21.78, "", { balance_after: -18.67 }),
+      row("c", "2026-11-23", 5, "", { balance_after: null }),
+    ]
+    const updates = planForwardBalances(rows, 8.8, { overwrite: true })
+    expect(updates).toEqual([
+      { id: "a", balance: 28.8 },
+      { id: "b", balance: 7.02 },
+      { id: "c", balance: 12.02 },
+    ])
+    expect(forwardEnd(rows, 8.8)).toBe(12.02)
+  })
+
+  it("splits the bank's booked and available balances", () => {
+    expect(pickBalances([
+      { balance_type: "ITAV", balance_amount: { amount: "1.21" } },
+      { balance_type: "CLBD", balance_amount: { amount: "17.91" } },
+    ])).toEqual({ booked: { amount: 17.91, date: null, type: "CLBD" }, available: 1.21 })
+    expect(pickBalances([{ balance_type: "CLBD", balance_amount: { amount: "5" } }]).available).toBeNull()
   })
 })
